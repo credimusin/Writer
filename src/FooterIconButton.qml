@@ -10,6 +10,8 @@ Item {
     property string tooltip
     property alias hovered: hitArea.containsMouse
 
+    onIconColorChanged: iconCanvas.requestPaint()
+
     signal clicked()
 
     width: 16

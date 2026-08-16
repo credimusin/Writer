@@ -8,6 +8,8 @@ Button {
     property string iconName
     property color iconColor: "#666666"
 
+    onIconColorChanged: iconCanvas.requestPaint()
+
     implicitWidth: 42
     implicitHeight: 42
     padding: 0

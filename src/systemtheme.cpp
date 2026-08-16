@@ -15,24 +15,6 @@ QVariant unwrapVariant(QVariant value) {
     return value;
 }
 
-bool colorSchemeIsDark(const QVariant &value, bool *known) {
-    bool ok = false;
-    const uint scheme = unwrapVariant(value).toUInt(&ok);
-    if (!ok)
-        return false;
-
-    if (scheme == 1) {
-        *known = true;
-        return true;
-    }
-    if (scheme == 2) {
-        *known = true;
-        return false;
-    }
-
-    return false;
-}
-
 // GNOME's text-scaling-factor is the desktop-wide "apparent text size" knob;
 // linux drives it from `linux display text size`, anchored so the default
 // 12px maps to 1.0. Ignore nonsense values and cap the range GNOME allows.
@@ -66,20 +48,6 @@ QVariant portalSetting(const QString &nameSpace, const QString &key) {
         return {};
 
     return reply.value().variant();
-}
-
-bool gsettingsSchemeIsDark(const QVariant &value, bool *known) {
-    const QString scheme = unwrapVariant(value).toString();
-    if (scheme.contains(QStringLiteral("prefer-dark"))) {
-        *known = true;
-        return true;
-    }
-    if (scheme.contains(QStringLiteral("prefer-light"))) {
-        *known = true;
-        return false;
-    }
-
-    return false;
 }
 }
 
@@ -118,48 +86,16 @@ void SystemTheme::handlePortalSettingChanged(const QString &nameSpace, const QSt
             setTextScale(scale);
         return;
     }
-
-    if (key != QStringLiteral("color-scheme"))
-        return;
-
-    bool known = false;
-    bool dark = false;
-    if (nameSpace == QStringLiteral("org.freedesktop.appearance"))
-        dark = colorSchemeIsDark(value.variant(), &known);
-    else if (nameSpace == QStringLiteral("org.gnome.desktop.interface"))
-        dark = gsettingsSchemeIsDark(value.variant(), &known);
-    else
-        return;
-
-    if (known)
-        setDarkMode(dark);
-    else
-        refresh();
 }
 
 bool SystemTheme::detectDarkMode() const {
     bool known = false;
-
-    const bool portalDark = portalDarkMode(&known);
-    if (known)
-        return portalDark;
 
     const bool qtDark = qtDarkMode(&known);
     if (known)
         return qtDark;
 
     return true;
-}
-
-bool SystemTheme::portalDarkMode(bool *known) const {
-    *known = false;
-
-    const QVariant scheme = portalSetting(QStringLiteral("org.freedesktop.appearance"),
-                                          QStringLiteral("color-scheme"));
-    if (!scheme.isValid())
-        return false;
-
-    return colorSchemeIsDark(scheme, known);
 }
 
 qreal SystemTheme::detectTextScale() const {

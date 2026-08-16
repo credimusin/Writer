@@ -1,8 +1,10 @@
+import QtCore
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtQuick.Window
+import QtQuick.Dialogs
 import "EditorMutations.js" as EditorMutations
 
 ApplicationWindow {
@@ -35,12 +37,11 @@ ApplicationWindow {
     property int searchMatchIndex: -1
     property url pendingOpenUrl
     property string pendingAction: ""
-    property bool replaceOpen: false
     property bool awaitingPendingSave: false
 
     Material.theme: darkMode ? Material.Dark : Material.Light
     Material.accent: backend.themeAccent
-    color: Qt.rgba(pageColor.r, pageColor.g, pageColor.b, 0.98)
+    color: "transparent"
 
     onClosing: function(close) {
         if (closeConfirmed || !backend.modified)
@@ -70,6 +71,8 @@ ApplicationWindow {
             close();
         } else if (action === "open") {
             backend.open(pendingOpenUrl);
+        } else if (action === "openDialog") {
+            openDialog.open();
         }
     }
 
@@ -90,7 +93,7 @@ ApplicationWindow {
             : Window.FullScreen;
     }
 
-    function updateSearch() {
+    function updateSearch(fromEditor) {
         var matches = [];
         var query = searchField.text;
         if (query.length > 0) {
@@ -103,17 +106,34 @@ ApplicationWindow {
             }
         }
         searchMatches = matches;
-        searchMatchIndex = matches.length > 0 ? 0 : -1;
-        showSearchMatch();
+        
+        // If we are just updating because the editor text changed, we shouldn't
+        // jump to the first match if the user is typing elsewhere. We just want 
+        // to update the match count and highlights. 
+        if (!fromEditor) {
+            searchMatchIndex = matches.length > 0 ? 0 : -1;
+        } else {
+            // Keep the index valid if matches changed
+            if (searchMatchIndex >= matches.length) {
+                searchMatchIndex = matches.length > 0 ? 0 : -1;
+            }
+        }
+        
+        showSearchMatch(!fromEditor);
     }
 
-    function showSearchMatch() {
+    function showSearchMatch(forceSelect) {
         var start = searchMatchIndex >= 0 ? searchMatches[searchMatchIndex] : -1;
         searchUpdating = true;
         backend.setSearchHighlight(searchField.text, start);
-        if (start >= 0) {
-            editor.select(start, start + searchField.text.length);
-            editorFlick.ensureCursorVisible();
+        
+        if (forceSelect) {
+            if (start >= 0) {
+                editor.select(start, start + searchField.text.length);
+                editorFlick.ensureCursorVisible();
+            } else {
+                editor.deselect();
+            }
         }
         searchUpdating = false;
     }
@@ -123,7 +143,7 @@ ApplicationWindow {
             return;
         searchMatchIndex = (searchMatchIndex + direction + searchMatches.length)
                            % searchMatches.length;
-        showSearchMatch();
+        showSearchMatch(true);
     }
 
     function closeSearch() {
@@ -132,35 +152,23 @@ ApplicationWindow {
         backend.setSearchHighlight("", -1);
         editor.deselect();
         searchUpdating = false;
-        replaceOpen = false;
         editor.forceActiveFocus();
     }
 
     Shortcut {
-        sequence: "Ctrl+S"
+        sequences: [StandardKey.Save]
         context: Qt.ApplicationShortcut
         onActivated: backend.save()
     }
 
     Shortcut {
-        sequence: "Ctrl+H"
-        context: Qt.ApplicationShortcut
-        onActivated: {
-            searchOpen = true;
-            replaceOpen = true;
-            searchField.forceActiveFocus();
-            searchField.selectAll();
-        }
-    }
-
-    Shortcut {
-        sequence: "Ctrl+B"
+        sequences: [StandardKey.Bold]
         context: Qt.WindowShortcut
         onActivated: editor.wrapSelection("**", "**")
     }
 
     Shortcut {
-        sequence: "Ctrl+I"
+        sequences: [StandardKey.Italic]
         context: Qt.WindowShortcut
         onActivated: editor.wrapSelection("*", "*")
     }
@@ -172,67 +180,67 @@ ApplicationWindow {
     }
 
     Shortcut {
-        sequence: "Ctrl+?"
+        sequences: ["Ctrl+?", StandardKey.HelpContents]
         context: Qt.ApplicationShortcut
         onActivated: shortcutsDialog.open()
     }
 
     Shortcut {
-        sequence: "Ctrl+O"
+        sequences: [StandardKey.Open]
         context: Qt.ApplicationShortcut
         onActivated: {
-            var url = backend.execOpenDialog();
-            if (url !== "") win.requestOpen(url);
-        }
-    }
-
-    Shortcut {
-        sequence: "Ctrl+N"
-        context: Qt.ApplicationShortcut
-        onActivated: backend.newWindow()
-    }
-
-    Shortcut {
-        sequence: "Ctrl+Shift+S"
-        context: Qt.ApplicationShortcut
-        onActivated: {
-            var url = backend.execSaveDialog();
-            if (url !== "") {
-                backend.saveAs(url);
+            if (backend.modified) {
+                win.pendingAction = "openDialog";
+                unsavedChangesDialog.open();
             } else {
-                backend.fileDialogCanceled();
-                win.awaitingPendingSave = false;
-                win.pendingAction = "";
+                openDialog.open();
             }
         }
     }
 
     Shortcut {
-        sequence: "Ctrl+P"
+        sequences: [StandardKey.New]
         context: Qt.ApplicationShortcut
-        onActivated: backend.printDocument()
+        onActivated: backend.newWindow()
     }
 
     Shortcut {
-        sequences: ["Meta+F", "F11"]
+        sequences: [StandardKey.SaveAs]
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            saveDialog.currentFolder = backend.suggestedSaveUrl();
+            saveDialog.open();
+        }
+    }
+
+    Shortcut {
+        sequences: ["Ctrl+T"]
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            appearanceSettings.themeMode = (win.darkMode ? 1 : 2);
+        }
+    }
+
+    Shortcut {
+        sequences: [StandardKey.FullScreen, "Meta+F", "F11"]
         context: Qt.ApplicationShortcut
         onActivated: toggleFullScreen()
     }
 
     Shortcut {
-        sequence: "Ctrl+Z"
+        sequences: [StandardKey.Undo]
         context: Qt.WindowShortcut
         onActivated: editor.undo()
     }
 
     Shortcut {
-        sequences: ["Ctrl+Shift+Z", "Ctrl+Y"]
+        sequences: [StandardKey.Redo]
         context: Qt.WindowShortcut
         onActivated: editor.redo()
     }
 
     Shortcut {
-        sequence: "Ctrl+F"
+        sequences: [StandardKey.Find]
         context: Qt.ApplicationShortcut
         onActivated: {
             searchOpen = true;
@@ -242,7 +250,7 @@ ApplicationWindow {
     }
 
     Shortcut {
-        sequence: "Ctrl+G"
+        sequences: [StandardKey.FindNext]
         context: Qt.ApplicationShortcut
         enabled: win.searchOpen
         onActivated: win.moveSearch(1)
@@ -305,20 +313,100 @@ ApplicationWindow {
         onReloadRequested: backend.reloadFromDisk()
     }
 
+    Connections {
+        target: backend
+        function onSaveAsRequested() {
+            saveDialog.currentFolder = backend.suggestedSaveUrl();
+            saveDialog.open();
+        }
+    }
+
+    FileDialog {
+        id: openDialog
+        title: "Open File"
+        nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
+        onAccepted: {
+            if (selectedFile !== "")
+                backend.open(selectedFile);
+        }
+    }
+
+    FileDialog {
+        id: saveDialog
+        title: "Save File"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
+        onAccepted: {
+            if (selectedFile !== "")
+                backend.saveAs(selectedFile);
+        }
+        onRejected: {
+            backend.fileDialogCanceled();
+            win.awaitingPendingSave = false;
+            win.pendingAction = "";
+        }
+    }
+
     Dialog {
         id: shortcutsDialog
         modal: true
-        title: "Keyboard shortcuts"
-        standardButtons: Dialog.Close
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
         anchors.centerIn: parent
-        contentItem: Label {
-            text: "Ctrl+S  Save\nCtrl+Shift+S  Save As\nCtrl+O  Open\nCtrl+N  New Window\nCtrl+F  Find\nCtrl+H  Find and Replace\nCtrl+B  Bold\nCtrl+I  Italic\nCtrl+K  Link\nCtrl+P  Print\nF11 / Super+F  Fullscreen\nCtrl+?  Shortcuts"
-            lineHeight: 1.5
+        padding: 20
+
+        Overlay.modal: Rectangle { color: "transparent" }
+
+        background: Rectangle {
+            color: win.darkMode ? "#000000" : "#ffffff"
+            border.color: win.darkMode ? "#222222" : "#d8d8d8"
+            radius: 0
+        }
+
+        contentItem: Item {
+            implicitWidth: shortcutsColumn.implicitWidth + 40
+            implicitHeight: shortcutsColumn.implicitHeight
+
+            Column {
+                id: shortcutsColumn
+                spacing: 12
+
+                Label {
+                    text: "Keyboard shortcuts"
+                    color: win.strongTextColor
+                    font.family: "monospace"
+                    font.pixelSize: win.scaledSize(16)
+                    font.bold: true
+                }
+
+                Label {
+                    text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
+                    lineHeight: 1.5
+                    color: win.textColor
+                    font.family: "monospace"
+                    font.pixelSize: win.scaledSize(13)
+                }
+            }
+
+            SearchIconButton {
+                iconName: "close"
+                iconColor: win.mutedColor
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.rightMargin: -10
+                anchors.topMargin: -10
+                onClicked: shortcutsDialog.close()
+            }
         }
     }
 
     Item {
         anchors.fill: parent
+
+        Rectangle {
+            anchors.fill: parent
+            color: pageColor
+        }
 
         Flickable {
             id: editorFlick
@@ -331,169 +419,13 @@ ApplicationWindow {
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {
                 policy: ScrollBar.AsNeeded
-                // Wheel scrolling moves contentY directly rather than
-                // flicking the Flickable, so the bar has to be told about
-                // that activity; linger briefly after the last event.
-                active: hovered || pressed || wheelScroll.running || scrollLinger.running
+                active: hovered || pressed
                 // Stop above the footer strip so the bar doesn't overlap
                 // the word count in the bottom-right corner. Padding and
                 // inset, not anchors: the attached-ScrollBar layout overrides
                 // anchors. Padding stops the thumb, the inset the track.
                 bottomPadding: win.scaledSize(32)
                 bottomInset: win.scaledSize(32)
-            }
-
-            Timer {
-                id: scrollLinger
-                interval: 600
-            }
-
-            // Flickable turns a wheel notch into a flick sized by the small
-            // application font, which crawls next to a browser. Reproduce
-            // Chromium's wheel physics instead (cc::ScrollOffsetAnimationCurve):
-            // each notch moves 3 lines of 40px towards a running target, the
-            // animation gets shorter as the outstanding distance grows, and a
-            // notch landing mid-animation carries the current velocity into
-            // the new curve, so sustained spinning keeps picking up speed.
-            readonly property real wheelStep: win.scaledSize(120)
-
-            FrameAnimation {
-                id: wheelScroll
-                running: false
-
-                property real startY: 0
-                property real targetY: 0
-                property real duration: 0.2
-                // Cubic bezier easing; ease-in-out (0.42, 0, 0.58, 1) for a
-                // fresh scroll, with y1 tilted on retarget so the curve's
-                // initial slope matches the velocity it inherits.
-                property real cx1: 0.42
-                property real cy1: 0
-                readonly property real cx2: 0.58
-                readonly property real cy2: 1
-
-                onTriggered: {
-                    var x = elapsedTime / duration;
-                    if (x >= 1) {
-                        editorFlick.contentY = editorFlick.snapToPixel(targetY);
-                        stop();
-                        return;
-                    }
-                    editorFlick.contentY = editorFlick.snapToPixel(
-                        startY + (targetY - startY) * curveY(solveCurve(x)));
-                }
-
-                function begin(from, to, dur, slope) {
-                    startY = from;
-                    targetY = to;
-                    duration = dur;
-                    cx1 = 0.42;
-                    cy1 = 0.42 * Math.max(-1000, Math.min(1000, slope));
-                    restart();
-                }
-
-                function retarget(newTarget) {
-                    var s = solveCurve(Math.min(1, elapsedTime / duration));
-                    var pos = startY + (targetY - startY) * curveY(s);
-                    var delta = newTarget - pos;
-                    if (Math.abs(delta) < 0.5) {
-                        editorFlick.contentY = newTarget;
-                        stop();
-                        return;
-                    }
-
-                    var velocity = curveDY(s) / Math.max(1e-6, curveDX(s))
-                        * (targetY - startY) / duration;
-                    var dur = editorFlick.wheelDuration(delta);
-                    // When already moving faster than the eased curve would,
-                    // bound the duration by the time to target at the current
-                    // velocity; the 2.5x covers the ease-out tail.
-                    if (velocity !== 0 && delta / velocity > 0)
-                        dur = Math.min(dur, delta / velocity * 2.5);
-                    begin(pos, newTarget, dur, velocity * dur / delta);
-                }
-
-                // Cubic bezier through (0,0), (cx1,cy1), (cx2,cy2), (1,1),
-                // evaluated by Newton-solving the curve parameter from x.
-                function curveX(s) { return 3 * s * (1 - s) * ((1 - s) * cx1 + s * cx2) + s * s * s; }
-                function curveY(s) { return 3 * s * (1 - s) * ((1 - s) * cy1 + s * cy2) + s * s * s; }
-                function curveDX(s) { return 3 * (1 - s) * (1 - s) * cx1 + 6 * (1 - s) * s * (cx2 - cx1) + 3 * s * s * (1 - cx2); }
-                function curveDY(s) { return 3 * (1 - s) * (1 - s) * cy1 + 6 * (1 - s) * s * (cy2 - cy1) + 3 * s * s * (1 - cy2); }
-
-                function solveCurve(x) {
-                    var s = x;
-                    for (var i = 0; i < 8; ++i) {
-                        var error = curveX(s) - x;
-                        if (Math.abs(error) < 0.001)
-                            break;
-                        var d = curveDX(s);
-                        if (Math.abs(d) < 1e-6)
-                            break;
-                        s = Math.max(0, Math.min(1, s - error / d));
-                    }
-                    return s;
-                }
-            }
-
-            WheelHandler {
-                // Wayland compositors route every pointer's scroll through
-                // one seat device that Qt classifies as a touchpad, so the
-                // device type cannot tell a mouse wheel from two-finger
-                // scrolling. Distinguish by event shape instead: discrete
-                // wheel notches arrive with only angleDelta set, while
-                // finger scrolling carries pixel-precise pixelDelta.
-                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                onWheel: function(wheel) {
-                    scrollLinger.restart();
-                    if (wheel.pixelDelta.y !== 0)
-                        editorFlick.scrollTo(editorFlick.clampContentY(editorFlick.contentY - wheel.pixelDelta.y));
-                    else
-                        editorFlick.scrollByWheel(wheel);
-                    wheel.accepted = true;
-                }
-            }
-
-            onMovementStarted: wheelScroll.stop()
-
-            function scrollByWheel(wheel) {
-                // High-resolution wheels report fractional notches; feed
-                // those through the same animated path, like Chromium does
-                // for every wheel-source event.
-                var notches = wheel.angleDelta.y / 120;
-                if (notches === 0)
-                    return;
-
-                if (wheelScroll.running) {
-                    wheelScroll.retarget(clampContentY(wheelScroll.targetY - notches * wheelStep));
-                    return;
-                }
-
-                var target = clampContentY(contentY - notches * wheelStep);
-                if (target !== contentY)
-                    wheelScroll.begin(contentY, target, wheelDuration(target - contentY), 0);
-            }
-
-            // Chromium's inverse-delta duration: 200ms for a single notch,
-            // ramping down to 100ms once 480px are outstanding.
-            function wheelDuration(delta) {
-                var pixels = Math.abs(delta) / win.textScale;
-                return Math.max(6, Math.min(12, 14 - pixels / 60)) / 60;
-            }
-
-            function clampContentY(y) {
-                return Math.max(0, Math.min(Math.max(0, contentHeight - height), y));
-            }
-
-            // Whole device pixels keep natively hinted glyphs from
-            // re-rasterizing mid-animation, which reads as shimmer.
-            function snapToPixel(y) {
-                return Math.round(y * Screen.devicePixelRatio) / Screen.devicePixelRatio;
-            }
-
-            // Jump to a position, abandoning any wheel animation still running.
-            function scrollTo(y) {
-                wheelScroll.stop();
-                contentY = snapToPixel(y);
             }
 
             // Keep the editing caret within the viewport so writing past the
@@ -505,9 +437,9 @@ ApplicationWindow {
                 var maxContentY = Math.max(0, contentHeight - height);
 
                 if (cursorBottom + margin > contentY + height)
-                    scrollTo(Math.min(maxContentY, cursorBottom + margin - height));
+                    contentY = Math.min(maxContentY, cursorBottom + margin - height);
                 else if (cursorTop - margin < contentY)
-                    scrollTo(Math.max(0, cursorTop - margin));
+                    contentY = Math.max(0, cursorTop - margin);
             }
 
             TextEdit {
@@ -756,7 +688,7 @@ ApplicationWindow {
                         return;
                     var contentChanged = backend.editorTextChanged();
                     if (win.searchOpen && contentChanged)
-                        win.updateSearch();
+                        win.updateSearch(true);
                 }
 
                 Text {
@@ -824,9 +756,10 @@ ApplicationWindow {
             anchors.bottom: footerStatus.top
             anchors.bottomMargin: 4
             text: saveBtn.hovered ? "Save" : (openBtn.hovered ? "Open" : "")
-            color: "#ffffff"
+            color: win.mutedColor
             font.family: "monospace"
             font.pixelSize: 12
+            font.weight: Font.Bold
             visible: text !== ""
         }
 
@@ -843,173 +776,102 @@ ApplicationWindow {
         }
 
 
-        Pane {
+        Rectangle {
+            id: searchPanel
             anchors.top: parent.top
-            anchors.left: parent.left
             anchors.right: parent.right
-            anchors.topMargin: 12
-            anchors.leftMargin: 12
-            anchors.rightMargin: 12
-            height: win.scaledSize(win.replaceOpen ? 104 : 56)
+            anchors.topMargin: 16
+            anchors.rightMargin: 16
+            width: Math.min(parent.width - 32, win.scaledSize(320))
+            height: win.scaledSize(42)
             visible: win.searchOpen
             z: 10
-            leftPadding: 16
-            rightPadding: 8
-            topPadding: 0
-            bottomPadding: 0
-            Material.elevation: 8
-
-            background: Rectangle {
-                radius: 0
-                opacity: 0.9
-                color: win.darkMode ? "#22221f" : "#fffef2"
-            }
+            radius: 0
+            color: win.darkMode ? "#181818" : "#ffffff"
+            border.color: win.darkMode ? "#333333" : "#e0e0e0"
+            border.width: 1
 
             RowLayout {
                 anchors.fill: parent
+                anchors.leftMargin: 16
+                anchors.rightMargin: 16
                 spacing: 8
 
-                Item {
+                TextInput {
+                    id: searchField
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-
-                    TextInput {
-                        id: searchField
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        height: win.replaceOpen ? parent.height / 2 : parent.height
-                        verticalAlignment: TextInput.AlignVCenter
-                        selectByMouse: true
-                        color: win.textColor
-                        selectionColor: win.selectionFill
-                        selectedTextColor: win.strongTextColor
-                        font.pixelSize: win.scaledSize(17)
-                        clip: true
-                        onTextChanged: win.updateSearch()
-                        Keys.onReturnPressed: function(event) {
-                            win.moveSearch((event.modifiers & Qt.ShiftModifier) ? -1 : 1);
-                            event.accepted = true;
-                        }
-                        Keys.onEscapePressed: function(event) {
-                            win.closeSearch();
-                            event.accepted = true;
-                        }
+                    verticalAlignment: TextInput.AlignVCenter
+                    selectByMouse: true
+                    color: win.textColor
+                    selectionColor: win.selectionFill
+                    selectedTextColor: win.strongTextColor
+                    font.pixelSize: win.scaledSize(15)
+                    font.family: "monospace"
+                    clip: true
+                    onTextChanged: win.updateSearch()
+                    Keys.onReturnPressed: function(event) {
+                        win.moveSearch((event.modifiers & Qt.ShiftModifier) ? -1 : 1);
+                        event.accepted = true;
                     }
-
-                    TextInput {
-                        id: replaceField
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        height: parent.height / 2
-                        visible: win.replaceOpen
-                        verticalAlignment: TextInput.AlignVCenter
-                        color: win.textColor
-                        selectionColor: win.selectionFill
-                        selectedTextColor: win.strongTextColor
-                        font.pixelSize: win.scaledSize(17)
-                        Keys.onReturnPressed: replaceCurrentButton.clicked()
+                    Keys.onEscapePressed: function(event) {
+                        win.closeSearch();
+                        event.accepted = true;
                     }
-
+                    
                     Label {
-                        anchors.verticalCenter: replaceField.verticalCenter
-                        text: "Replace with"
-                        visible: win.replaceOpen && replaceField.text.length === 0
-                        color: win.mutedColor
-                        font.pixelSize: win.scaledSize(17)
-                    }
-
-                    Label {
-                        anchors.verticalCenter: searchField.verticalCenter
-                        text: "Find"
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Find..."
                         visible: searchField.text.length === 0
                         color: win.mutedColor
-                        font.pixelSize: win.scaledSize(17)
+                        font.pixelSize: win.scaledSize(15)
+                        font.family: "monospace"
                     }
                 }
 
                 Label {
-                    Layout.preferredWidth: win.scaledSize(58)
-                    Layout.fillHeight: true
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+                    Layout.alignment: Qt.AlignVCenter
                     text: win.searchMatches.length === 0
                         ? "0/0"
                         : (win.searchMatchIndex + 1) + "/" + win.searchMatches.length
-                    color: win.darkMode ? win.textColor : "#62635f"
-                    font.pixelSize: win.scaledSize(16)
-                }
-
-                SquareDialogButton {
-                    id: replaceCurrentButton
-                    visible: win.replaceOpen
-                    text: "Replace"
-                    darkMode: win.darkMode
-                    textScale: win.textScale
-                    onClicked: {
-                        if (win.searchMatchIndex < 0) return;
-                        var start = win.searchMatches[win.searchMatchIndex];
-                        EditorMutations.replaceRange(editor, start,
-                                                     start + searchField.text.length,
-                                                     replaceField.text);
-                        win.updateSearch();
-                    }
-                }
-
-                SquareDialogButton {
-                    visible: win.replaceOpen
-                    text: "All"
-                    darkMode: win.darkMode
-                    textScale: win.textScale
-                    onClicked: {
-                        if (searchField.text.length === 0) return;
-                        for (var i = win.searchMatches.length - 1; i >= 0; --i) {
-                            var start = win.searchMatches[i];
-                            EditorMutations.replaceRange(editor, start,
-                                                         start + searchField.text.length,
-                                                         replaceField.text);
-                        }
-                        win.updateSearch();
-                    }
-                }
-
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.preferredHeight: 34
-                    color: win.darkMode ? "#6f6f62" : "#d5d56e"
-                }
-
-                SearchIconButton {
-                    iconName: "up"
-                    iconColor: win.darkMode ? win.textColor : "#62635f"
-                    onClicked: win.moveSearch(-1)
-                }
-
-                SearchIconButton {
-                    iconName: "down"
-                    iconColor: win.darkMode ? win.textColor : "#62635f"
-                    onClicked: win.moveSearch(1)
-                }
-
-                SearchIconButton {
-                    iconName: "close"
-                    iconColor: win.darkMode ? win.textColor : "#62635f"
-                    onClicked: win.closeSearch()
+                    color: win.mutedColor
+                    font.pixelSize: win.scaledSize(14)
+                    font.family: "monospace"
                 }
             }
         }
     }
 
-    Component.onCompleted: {
-        var geometry = backend.windowGeometry();
-        if (geometry.x >= 0) x = geometry.x;
-        if (geometry.y >= 0) y = geometry.y;
-        width = geometry.width;
-        height = geometry.height;
-        if (geometry.maximized) showMaximized();
+    Settings {
+        id: windowSettings
+        category: "window"
+        property alias x: win.x
+        property alias y: win.y
+        property alias width: win.width
+        property alias height: win.height
+        property bool maximized: false
     }
 
-    Component.onDestruction: backend.saveWindowGeometry(x, y, width, height, visibility === Window.Maximized)
+    Settings {
+        id: appearanceSettings
+        category: "appearance"
+        property int themeMode: 1 // 0 = system, 1 = light, 2 = dark
+    }
 
+    property bool effectiveDarkMode: {
+        if (appearanceSettings.themeMode === 1) return false;
+        if (appearanceSettings.themeMode === 2) return true;
+        return systemTheme.darkMode;
+    }
+
+    onEffectiveDarkModeChanged: {
+        backend.darkMode = effectiveDarkMode;
+    }
+
+    Component.onCompleted: {
+        backend.darkMode = effectiveDarkMode;
+        if (windowSettings.maximized) showMaximized();
+    }
+
+    onVisibilityChanged: windowSettings.maximized = (win.visibility === Window.Maximized)
 }

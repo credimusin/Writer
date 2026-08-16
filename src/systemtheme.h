@@ -6,6 +6,8 @@ class QDBusVariant;
 
 class SystemTheme : public QObject {
     Q_OBJECT
+    Q_PROPERTY(bool darkMode READ darkMode NOTIFY darkModeChanged)
+    Q_PROPERTY(qreal textScale READ textScale NOTIFY textScaleChanged)
 
 public:
     explicit SystemTheme(QObject *parent = nullptr);

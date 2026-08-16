@@ -29,16 +29,13 @@ int main(int argc, char *argv[]) {
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("writer")));
 
 
-    app.setOrganizationName(QStringLiteral("BMO"));
-    app.setOrganizationDomain(QStringLiteral("bmo.local"));
+    app.setOrganizationName(QStringLiteral("writer"));
+    app.setOrganizationDomain(QStringLiteral("writer.local"));
 
     QQuickStyle::setStyle(QStringLiteral("Material"));
 
     Backend backend(&app);
     SystemTheme systemTheme(&app);
-    backend.setDarkMode(systemTheme.darkMode());
-    QObject::connect(&systemTheme, &SystemTheme::darkModeChanged, &backend,
-                     &Backend::setDarkMode);
 
     // Carry the desktop's text scale into the default font, so the chrome that
     // inherits it (dialog titles, buttons) grows along with the writing area.
@@ -67,6 +64,7 @@ int main(int argc, char *argv[]) {
             qWarning().noquote() << warning.toString();
     });
     engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+    engine.rootContext()->setContextProperty(QStringLiteral("systemTheme"), &systemTheme);
 
     engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
     if (engine.rootObjects().isEmpty()) {

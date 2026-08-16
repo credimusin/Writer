@@ -54,12 +54,11 @@ public:
     static QString suggestedFileName(const QString &text);
 
     Q_INVOKABLE void attachDocument(QObject *textDocument);
-    Q_INVOKABLE QString execOpenDialog();
     Q_INVOKABLE void open(const QUrl &url);
     Q_INVOKABLE void save();
     Q_INVOKABLE void saveForClose();
-    Q_INVOKABLE QString execSaveDialog();
     Q_INVOKABLE void saveAs(const QUrl &url);
+    Q_INVOKABLE QUrl suggestedSaveUrl() const;
     Q_INVOKABLE void fileDialogCanceled();
     Q_INVOKABLE void discardRecovery();
     Q_INVOKABLE void reloadFromDisk();
@@ -72,10 +71,9 @@ public:
     Q_INVOKABLE QVariantList hiddenRangesAt(int position) const;
     Q_INVOKABLE void setSearchHighlight(const QString &query, int currentMatchStart);
     Q_INVOKABLE void openExternalUrl(const QUrl &url);
-    Q_INVOKABLE QVariantMap windowGeometry() const;
-    Q_INVOKABLE void saveWindowGeometry(int x, int y, int width, int height, bool maximized);
 
 signals:
+    void saveAsRequested();
     void fileUrlChanged();
     void modifiedChanged();
     void statusChanged();
@@ -93,7 +91,7 @@ private:
     void setModified(bool modified);
     void setStatus(const QString &status);
     void saveTo(const QUrl &url);
-    QUrl suggestedSaveUrl() const;
+
     QString currentDocumentText() const;
     void setWordCount(int words);
     void refreshWordCount();
@@ -131,7 +129,7 @@ private:
     QString m_recoveryPath;
     std::unique_ptr<QLockFile> m_recoveryLock;
 
-    QString m_themeBackground = QStringLiteral("#101010");
+    QString m_themeBackground = QStringLiteral("#fa101010");
     QString m_themeForeground = QStringLiteral("#f5f1e8");
     QString m_themeAccent = QStringLiteral("#4a90e2");
     QString m_themeSelection = QStringLiteral("#2c4a6b");

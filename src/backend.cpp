@@ -47,15 +47,7 @@ QString Backend::normalizedLinkUrl(const QString &clipboardText) {
     if (candidate.isEmpty())
         return {};
 
-    if (candidate.startsWith(QStringLiteral("www."), Qt::CaseInsensitive))
-        candidate.prepend(QStringLiteral("https://"));
-
-    static const QRegularExpression schemeRe(
-        QStringLiteral("^[A-Za-z][A-Za-z0-9+.-]*:"));
-    if (!schemeRe.match(candidate).hasMatch())
-        return {};
-
-    const QUrl url(candidate);
+    QUrl url = QUrl::fromUserInput(candidate);
     if (!url.isValid() || url.scheme().isEmpty())
         return {};
 
@@ -150,11 +142,11 @@ void Backend::setDarkMode(bool darkMode) {
     m_darkMode = darkMode;
     
     if (m_darkMode) {
-        m_themeBackground = QStringLiteral("#101010");
+        m_themeBackground = QStringLiteral("#fa101010"); // ~98% opacity
         m_themeForeground = QStringLiteral("#f5f1e8");
         m_themeSelection = QStringLiteral("#2c4a6b");
     } else {
-        m_themeBackground = QStringLiteral("#ffffff");
+        m_themeBackground = QStringLiteral("#f5ffffff"); // ~96% opacity
         m_themeForeground = QStringLiteral("#101010");
         m_themeSelection = QStringLiteral("#b0c4de");
     }
@@ -204,17 +196,6 @@ void Backend::attachDocument(QObject *textDocument) {
     restoreRecovery();
 }
 
-QString Backend::execOpenDialog() {
-    QString fileName = QFileDialog::getOpenFileName(
-        nullptr,
-        QStringLiteral("Open File"),
-        QString(),
-        QStringLiteral("Markdown files (*.md *.markdown);;All files (*)")
-    );
-    if (fileName.isEmpty()) return QString();
-    return QUrl::fromLocalFile(fileName).toString();
-}
-
 void Backend::open(const QUrl &url) {
     if (!url.isLocalFile()) {
         setStatus(QStringLiteral("Only local files can be opened."));
@@ -241,12 +222,7 @@ void Backend::open(const QUrl &url) {
 
 void Backend::save() {
     if (!m_fileUrl.isValid() || m_fileUrl.isEmpty()) {
-        QString url = execSaveDialog();
-        if (!url.isEmpty()) {
-            saveAs(QUrl(url));
-        } else {
-            fileDialogCanceled();
-        }
+        emit saveAsRequested();
         return;
     }
 
@@ -261,17 +237,6 @@ void Backend::saveForClose() {
 
     m_closeAfterSave = true;
     save();
-}
-
-QString Backend::execSaveDialog() {
-    QString fileName = QFileDialog::getSaveFileName(
-        nullptr,
-        QStringLiteral("Save File"),
-        suggestedSaveUrl().toLocalFile(),
-        QStringLiteral("Markdown files (*.md *.markdown);;All files (*)")
-    );
-    if (fileName.isEmpty()) return QString();
-    return QUrl::fromLocalFile(fileName).toString();
 }
 
 void Backend::saveAs(const QUrl &url) {
@@ -431,25 +396,6 @@ void Backend::openExternalUrl(const QUrl &url) {
         QDesktopServices::openUrl(url);
 }
 
-QVariantMap Backend::windowGeometry() const {
-    QSettings settings;
-    return {{QStringLiteral("x"), settings.value(QStringLiteral("window/x"), -1)},
-            {QStringLiteral("y"), settings.value(QStringLiteral("window/y"), -1)},
-            {QStringLiteral("width"), settings.value(QStringLiteral("window/width"), 1280)},
-            {QStringLiteral("height"), settings.value(QStringLiteral("window/height"), 820)},
-            {QStringLiteral("maximized"), settings.value(QStringLiteral("window/maximized"), false)}};
-}
-
-void Backend::saveWindowGeometry(int x, int y, int width, int height, bool maximized) {
-    QSettings settings;
-    if (!maximized) {
-        settings.setValue(QStringLiteral("window/x"), x);
-        settings.setValue(QStringLiteral("window/y"), y);
-        settings.setValue(QStringLiteral("window/width"), width);
-        settings.setValue(QStringLiteral("window/height"), height);
-    }
-    settings.setValue(QStringLiteral("window/maximized"), maximized);
-}
 
 void Backend::loadDocumentText(const QString &text) {
     if (!m_document) {
