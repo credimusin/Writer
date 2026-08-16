@@ -6,8 +6,7 @@ Button {
 
     property bool primary: false
     property bool darkMode: true
-    property color labelColor: primary ? "#ffffff" : "#d0d0d0"
-    property color activeColor: "#428bca"
+    property color labelColor: darkMode ? "#ffffff" : "#101010"
     property real textScale: 1
 
     leftPadding: 16
@@ -23,25 +22,20 @@ Button {
         color: control.labelColor
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
-        font.family: "iA Writer Mono S"
+        font.family: "monospace"
         font.pixelSize: Math.round(12 * control.textScale)
     }
 
     background: Rectangle {
         implicitWidth: 88
         implicitHeight: 34
-        radius: 0
-        color: control.primary
-            ? (control.down ? "#347ab3" : control.hovered ? "#4b96d0" : control.activeColor)
-            : control.down
-                ? (control.darkMode ? "#2a2a2a" : "#dedede")
-                : control.hovered
-                    ? (control.darkMode ? "#242424" : "#eeeeee")
-                    : (control.darkMode ? "#202020" : "#f6f6f6")
-        border.color: control.activeFocus
-            ? (control.darkMode ? "#eeeeee" : "#222324")
+        color: control.down 
+            ? (control.darkMode ? "#2a2a2a" : "#e0e0e0")
             : control.primary
-                ? "#367eb7"
-                : (control.darkMode ? "#424242" : "#c8c8c8")
+                ? (control.darkMode ? "#000000" : "#ffffff")
+                : (control.darkMode ? "#1a1a1a" : "#f5f5f5")
+        border.color: control.activeFocus
+            ? (control.darkMode ? "#ffffff" : "#101010")
+            : (control.darkMode ? "#333333" : "#d8d8d8")
     }
 }

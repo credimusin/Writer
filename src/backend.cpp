@@ -18,6 +18,7 @@
 #include <QStandardPaths>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QFileDialog>
 #include <QLockFile>
 #include <QSaveFile>
 #include <QTextBlock>
@@ -116,16 +117,9 @@ Backend::Backend(QObject *parent) : QObject(parent) {
 
                 emit externalChangeDetected(deleted, m_modified);
             });
-
-    loadOmarchyTheme();
-    watchOmarchyTheme();
     connect(&m_themeWatcher, &QFileSystemWatcher::fileChanged, this, [this]() {
-        loadOmarchyTheme();
-        watchOmarchyTheme();
     });
     connect(&m_themeWatcher, &QFileSystemWatcher::directoryChanged, this, [this]() {
-        loadOmarchyTheme();
-        watchOmarchyTheme();
     });
 }
 
@@ -154,7 +148,23 @@ void Backend::setDarkMode(bool darkMode) {
         return;
 
     m_darkMode = darkMode;
-    loadOmarchyTheme();
+    
+    if (m_darkMode) {
+        m_themeBackground = QStringLiteral("#101010");
+        m_themeForeground = QStringLiteral("#f5f1e8");
+        m_themeSelection = QStringLiteral("#2c4a6b");
+    } else {
+        m_themeBackground = QStringLiteral("#ffffff");
+        m_themeForeground = QStringLiteral("#101010");
+        m_themeSelection = QStringLiteral("#b0c4de");
+    }
+    
+    if (m_highlighter) {
+        m_highlighter->setDarkMode(m_darkMode);
+        m_highlighter->setColors(m_themeBackground, m_themeForeground, m_themeAccent);
+    }
+    
+    emit themeColorsChanged();
     emit darkModeChanged();
 }
 
@@ -194,8 +204,15 @@ void Backend::attachDocument(QObject *textDocument) {
     restoreRecovery();
 }
 
-void Backend::openDialog() {
-    emit openDialogRequested();
+QString Backend::execOpenDialog() {
+    QString fileName = QFileDialog::getOpenFileName(
+        nullptr,
+        QStringLiteral("Open File"),
+        QString(),
+        QStringLiteral("Markdown files (*.md *.markdown);;All files (*)")
+    );
+    if (fileName.isEmpty()) return QString();
+    return QUrl::fromLocalFile(fileName).toString();
 }
 
 void Backend::open(const QUrl &url) {
@@ -224,7 +241,12 @@ void Backend::open(const QUrl &url) {
 
 void Backend::save() {
     if (!m_fileUrl.isValid() || m_fileUrl.isEmpty()) {
-        saveAsDialog();
+        QString url = execSaveDialog();
+        if (!url.isEmpty()) {
+            saveAs(QUrl(url));
+        } else {
+            fileDialogCanceled();
+        }
         return;
     }
 
@@ -241,8 +263,15 @@ void Backend::saveForClose() {
     save();
 }
 
-void Backend::saveAsDialog() {
-    emit saveDialogRequested(suggestedSaveUrl());
+QString Backend::execSaveDialog() {
+    QString fileName = QFileDialog::getSaveFileName(
+        nullptr,
+        QStringLiteral("Save File"),
+        suggestedSaveUrl().toLocalFile(),
+        QStringLiteral("Markdown files (*.md *.markdown);;All files (*)")
+    );
+    if (fileName.isEmpty()) return QString();
+    return QUrl::fromLocalFile(fileName).toString();
 }
 
 void Backend::saveAs(const QUrl &url) {
@@ -573,94 +602,8 @@ void Backend::watchCurrentFile() {
         m_fileWatcher.addPath(m_fileUrl.toLocalFile());
 }
 
-void Backend::loadOmarchyTheme() {
-    m_themeBackground = m_darkMode ? QStringLiteral("#101010") : QStringLiteral("#ffffff");
-    m_themeForeground = m_darkMode ? QStringLiteral("#eeeeee") : QStringLiteral("#222324");
-    m_themeAccent = m_darkMode ? QStringLiteral("#5584aa") : QStringLiteral("#2077b2");
-    m_themeSelection = m_darkMode ? QStringLiteral("#186a9a") : QStringLiteral("#2077b2");
 
-    const QString colorsPath = QDir::homePath()
-        + QStringLiteral("/.local/state/omarchy/current/theme/colors.toml");
-    QString themeMode;
-    QFile file(colorsPath);
-    if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QTextStream in(&file);
-        while (!in.atEnd()) {
-            const QString line = in.readLine().trimmed();
-            if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
-                continue;
 
-            const int equals = line.indexOf(QLatin1Char('='));
-            if (equals < 0)
-                continue;
-
-            const QString key = line.left(equals).trimmed();
-            QString value = line.mid(equals + 1).trimmed();
-            if (value.size() >= 2
-                    && ((value.front() == QLatin1Char('"') && value.back() == QLatin1Char('"'))
-                        || (value.front() == QLatin1Char('\'') && value.back() == QLatin1Char('\''))))
-                value = value.mid(1, value.size() - 2);
-
-            if (key == QStringLiteral("mode"))
-                themeMode = value;
-            else if (key == QStringLiteral("background"))
-                m_themeBackground = value;
-            else if (key == QStringLiteral("foreground"))
-                m_themeForeground = value;
-            else if (key == QStringLiteral("accent"))
-                m_themeAccent = value;
-            else if (key == QStringLiteral("selection"))
-                m_themeSelection = value;
-        }
-    }
-
-    bool themeModeKnown = false;
-    bool themeIsDark = m_darkMode;
-    if (themeMode == QStringLiteral("dark")) {
-        themeIsDark = true;
-        themeModeKnown = true;
-    } else if (themeMode == QStringLiteral("light")) {
-        themeIsDark = false;
-        themeModeKnown = true;
-    } else {
-        const QColor background(m_themeBackground);
-        if (background.isValid()) {
-            const double luminance = 0.299 * background.redF()
-                + 0.587 * background.greenF() + 0.114 * background.blueF();
-            themeIsDark = luminance < 0.5;
-            themeModeKnown = true;
-        }
-    }
-    if (themeModeKnown && themeIsDark != m_darkMode) {
-        m_darkMode = themeIsDark;
-        emit darkModeChanged();
-    }
-
-    if (m_highlighter) {
-        m_highlighter->setDarkMode(m_darkMode);
-        m_highlighter->setColors(m_themeBackground, m_themeForeground, m_themeAccent);
-    }
-
-    emit themeColorsChanged();
-}
-
-void Backend::watchOmarchyTheme() {
-    const QStringList watched = m_themeWatcher.files() + m_themeWatcher.directories();
-    if (!watched.isEmpty())
-        m_themeWatcher.removePaths(watched);
-
-    const QString currentDir = QDir::homePath()
-        + QStringLiteral("/.local/state/omarchy/current");
-    const QString themeDir = currentDir + QStringLiteral("/theme");
-    const QString colorsPath = themeDir + QStringLiteral("/colors.toml");
-
-    if (QDir(currentDir).exists())
-        m_themeWatcher.addPath(currentDir);
-    if (QDir(themeDir).exists())
-        m_themeWatcher.addPath(themeDir);
-    if (QFile::exists(colorsPath))
-        m_themeWatcher.addPath(colorsPath);
-}
 
 QUrl Backend::suggestedSaveUrl() const {
     if (m_fileUrl.isLocalFile())

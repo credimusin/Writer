@@ -9,22 +9,28 @@
 #include <QUrl>
 #include <QWindow>
 #include <QFile>
+#include <QSurfaceFormat>
 
 #include "backend.h"
 #include "systemtheme.h"
 
 int main(int argc, char *argv[]) {
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORMTHEME")) {
+        qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
+    }
+    
+    QSurfaceFormat format;
+    format.setAlphaBufferSize(8);
+    QSurfaceFormat::setDefaultFormat(format);
+    
     QApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("omawrite"));
-    app.setDesktopFileName(QStringLiteral("omawrite"));
-    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("omawrite")));
+    app.setApplicationName(QStringLiteral("writer"));
+    app.setDesktopFileName(QStringLiteral("dev.imaginal.writer"));
+    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("writer")));
 
-    QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/iAWriterMonoS-Regular.ttf"));
-    QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/iAWriterMonoS-Italic.ttf"));
-    QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/iAWriterMonoS-Bold.ttf"));
-    QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/iAWriterMonoS-BoldItalic.ttf"));
-    app.setOrganizationName(QStringLiteral("Omacom"));
-    app.setOrganizationDomain(QStringLiteral("omacom.io"));
+
+    app.setOrganizationName(QStringLiteral("BMO"));
+    app.setOrganizationDomain(QStringLiteral("bmo.local"));
 
     QQuickStyle::setStyle(QStringLiteral("Material"));
 
@@ -36,7 +42,7 @@ int main(int argc, char *argv[]) {
 
     // Carry the desktop's text scale into the default font, so the chrome that
     // inherits it (dialog titles, buttons) grows along with the writing area.
-    const QFont interfaceFont(QStringLiteral("iA Writer Mono S"));
+    const QFont interfaceFont(QStringLiteral("monospace"));
     const qreal basePointSize = interfaceFont.pointSizeF() > 0
         ? interfaceFont.pointSizeF()
         : app.font().pointSizeF();
@@ -64,7 +70,7 @@ int main(int argc, char *argv[]) {
 
     engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
-        qCritical() << "Could not load the Omawrite interface; resource available:"
+        qCritical() << "Could not load the Writer interface; resource available:"
                     << QFile::exists(QStringLiteral(":/Main.qml"));
         return -1;
     }

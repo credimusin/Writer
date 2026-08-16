@@ -8,7 +8,7 @@
 #include "backend.h"
 #include "markdownhighlighter.h"
 
-class OmawriteTest : public QObject {
+class WriterTest : public QObject {
     Q_OBJECT
 
 private slots:
@@ -54,39 +54,7 @@ private slots:
         QCOMPARE(markup.at(2).markers[0].length, 1);
     }
 
-    void loadsCurrentOmarchyTheme() {
-        QTemporaryDir homeDirectory;
-        QVERIFY(homeDirectory.isValid());
-
-        const QByteArray originalHome = qgetenv("HOME");
-        struct HomeRestorer {
-            QByteArray value;
-            ~HomeRestorer() { qputenv("HOME", value); }
-        } restoreHome{originalHome};
-        QVERIFY(qputenv("HOME", homeDirectory.path().toUtf8()));
-
-        const QString themeDirectory = homeDirectory.path()
-            + QStringLiteral("/.local/state/omarchy/current/theme");
-        QVERIFY(QDir().mkpath(themeDirectory));
-
-        QFile colorsFile(themeDirectory + QStringLiteral("/colors.toml"));
-        QVERIFY(colorsFile.open(QIODevice::WriteOnly | QIODevice::Text));
-        const QByteArray palette(
-            "mode = \"light\"\n"
-            "accent = \"#112233\"\n"
-            "selection = \"#445566\"\n"
-            "background = \"#fefefe\"\n"
-            "foreground = \"#101010\"\n");
-        QCOMPARE(colorsFile.write(palette), qint64(palette.size()));
-        colorsFile.close();
-
-        Backend backend;
-        QCOMPARE(backend.themeBackground(), QStringLiteral("#fefefe"));
-        QCOMPARE(backend.themeForeground(), QStringLiteral("#101010"));
-        QCOMPARE(backend.themeAccent(), QStringLiteral("#112233"));
-        QCOMPARE(backend.themeSelection(), QStringLiteral("#445566"));
-        QVERIFY(!backend.darkMode());
-    }
+    
 
     void ignoresFileWatcherEventsForSavedContents() {
         QTemporaryDir directory;
@@ -208,7 +176,7 @@ private slots:
         QVERIFY(editor);
         QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 20);
 
-        // `omarchy display text size 16` sets the GNOME factor to 16/12.
+        // `linux display text size 16` sets the GNOME factor to 16/12.
         backend.setTextScale(16.0 / 12.0);
         QCOMPARE(window->property("editorFontPixelSize").toInt(), 27);
         QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 27);
@@ -250,5 +218,5 @@ private:
     QTemporaryDir m_settingsDirectory;
 };
 
-QTEST_MAIN(OmawriteTest)
-#include "tst_omawrite.moc"
+QTEST_MAIN(WriterTest)
+#include "tst_writer.moc"

@@ -8,14 +8,14 @@ Item {
     property string iconName
     property color iconColor: "#666666"
     property string tooltip
+    property alias hovered: hitArea.containsMouse
 
     signal clicked()
 
     width: 16
     height: 16
 
-    ToolTip.visible: hitArea.containsMouse && tooltip.length > 0
-    ToolTip.text: tooltip
+
 
     Canvas {
         id: iconCanvas

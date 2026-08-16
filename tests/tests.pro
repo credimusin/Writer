@@ -1,11 +1,11 @@
 QT += core gui quick testlib
 CONFIG += testcase c++17
 TEMPLATE = app
-TARGET = tst_omawrite
+TARGET = tst_writer
 
 INCLUDEPATH += ../src
 SOURCES += \
-    tst_omawrite.cpp \
+    tst_writer.cpp \
     ../src/backend.cpp \
     ../src/markdownhighlighter.cpp
 HEADERS += \

@@ -34,7 +34,7 @@ bool colorSchemeIsDark(const QVariant &value, bool *known) {
 }
 
 // GNOME's text-scaling-factor is the desktop-wide "apparent text size" knob;
-// omarchy drives it from `omarchy display text size`, anchored so the default
+// linux drives it from `linux display text size`, anchored so the default
 // 12px maps to 1.0. Ignore nonsense values and cap the range GNOME allows.
 qreal sanitizedTextScale(const QVariant &value, bool *known) {
     bool ok = false;

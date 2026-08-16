@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
-import QtQuick.Dialogs as Dialogs
 import QtQuick.Layouts
 import QtQuick.Window
 import "EditorMutations.js" as EditorMutations
@@ -13,7 +12,7 @@ ApplicationWindow {
     minimumWidth: 720
     minimumHeight: 520
     visible: true
-    title: (backend.modified ? "* " : "") + backend.fileName + " - Omawrite"
+    title: (backend.modified ? "* " : "") + backend.fileName + " - Writer"
 
     readonly property bool darkMode: backend.darkMode
     readonly property color pageColor: backend.themeBackground
@@ -22,7 +21,7 @@ ApplicationWindow {
     readonly property color mutedColor: darkMode ? "#909191" : "#aeb1b5"
     readonly property color selectionFill: backend.themeSelection
     // The desktop's text size knob (GNOME's text-scaling-factor, which
-    // `omarchy display text size` drives) anchored so its 12px default leaves
+    // `linux display text size` drives) anchored so its 12px default leaves
     // the app at the sizes it was designed around.
     readonly property real textScale: backend.textScale
     readonly property int editorFontPixelSize: scaledSize(20)
@@ -41,7 +40,7 @@ ApplicationWindow {
 
     Material.theme: darkMode ? Material.Dark : Material.Light
     Material.accent: backend.themeAccent
-    color: pageColor
+    color: Qt.rgba(pageColor.r, pageColor.g, pageColor.b, 0.98)
 
     onClosing: function(close) {
         if (closeConfirmed || !backend.modified)
@@ -76,7 +75,7 @@ ApplicationWindow {
 
     FontMetrics {
         id: writerFontMetrics
-        font.family: "iA Writer Mono S"
+        font.family: "monospace"
         font.pixelSize: win.editorFontPixelSize
     }
 
@@ -181,7 +180,10 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+O"
         context: Qt.ApplicationShortcut
-        onActivated: backend.openDialog()
+        onActivated: {
+            var url = backend.execOpenDialog();
+            if (url !== "") win.requestOpen(url);
+        }
     }
 
     Shortcut {
@@ -193,7 +195,16 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+Shift+S"
         context: Qt.ApplicationShortcut
-        onActivated: backend.saveAsDialog()
+        onActivated: {
+            var url = backend.execSaveDialog();
+            if (url !== "") {
+                backend.saveAs(url);
+            } else {
+                backend.fileDialogCanceled();
+                win.awaitingPendingSave = false;
+                win.pendingAction = "";
+            }
+        }
     }
 
     Shortcut {
@@ -240,15 +251,6 @@ ApplicationWindow {
     Connections {
         target: backend
 
-        function onOpenDialogRequested() {
-            openFileDialog.open();
-        }
-
-        function onSaveDialogRequested(suggestedUrl) {
-            saveFileDialog.selectedFile = suggestedUrl;
-            saveFileDialog.open();
-        }
-
         function onCloseAfterSave() {
             win.closeConfirmed = true;
             win.close();
@@ -264,27 +266,6 @@ ApplicationWindow {
             externalChangeDialog.deleted = deleted;
             externalChangeDialog.locallyModified = locallyModified;
             externalChangeDialog.open();
-        }
-    }
-
-    Dialogs.FileDialog {
-        id: openFileDialog
-        title: "Open File"
-        fileMode: Dialogs.FileDialog.OpenFile
-        nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
-        onAccepted: win.requestOpen(selectedFile)
-    }
-
-    Dialogs.FileDialog {
-        id: saveFileDialog
-        title: "Save File"
-        fileMode: Dialogs.FileDialog.SaveFile
-        nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
-        onAccepted: backend.saveAs(selectedFile)
-        onRejected: {
-            backend.fileDialogCanceled();
-            win.awaitingPendingSave = false;
-            win.pendingAction = "";
         }
     }
 
@@ -545,7 +526,7 @@ ApplicationWindow {
                 color: win.textColor
                 selectedTextColor: win.strongTextColor
                 selectionColor: win.selectionFill
-                font.family: "iA Writer Mono S"
+                font.family: "monospace"
                 font.pixelSize: win.editorFontPixelSize
                 font.weight: Font.Normal
                 // Native rendering hints glyphs to the pixel grid, which is
@@ -801,11 +782,12 @@ ApplicationWindow {
             anchors.left: parent.left
             anchors.bottom: parent.bottom
             anchors.leftMargin: 12
-            anchors.bottomMargin: 10
+            anchors.bottomMargin: 6
             spacing: 12
             opacity: 0.55
 
             FooterIconButton {
+                id: saveBtn
                 objectName: "saveButton"
                 iconName: "save"
                 iconColor: win.mutedColor
@@ -814,17 +796,20 @@ ApplicationWindow {
             }
 
             FooterIconButton {
+                id: openBtn
                 objectName: "openButton"
                 iconName: "open"
                 iconColor: win.mutedColor
                 tooltip: "Open"
-                onClicked: backend.openDialog()
+                onClicked: {
+                    var url = backend.execOpenDialog();
+                    if (url !== "") win.requestOpen(url);
+                }
             }
-
             Label {
                 text: backend.status
                 color: win.mutedColor
-                font.family: "iA Writer Mono S"
+                font.family: "monospace"
                 font.pixelSize: win.scaledSize(11)
                 visible: text !== ""
                 elide: Text.ElideRight
@@ -835,6 +820,17 @@ ApplicationWindow {
         }
 
         Label {
+            anchors.left: footerStatus.left
+            anchors.bottom: footerStatus.top
+            anchors.bottomMargin: 4
+            text: saveBtn.hovered ? "Save" : (openBtn.hovered ? "Open" : "")
+            color: "#ffffff"
+            font.family: "monospace"
+            font.pixelSize: 12
+            visible: text !== ""
+        }
+
+        Label {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.rightMargin: 12
@@ -842,7 +838,7 @@ ApplicationWindow {
             text: backend.wordCount + (backend.wordCount === 1 ? " Word" : " Words")
             color: win.mutedColor
             opacity: 0.75
-            font.family: "iA Writer Mono S"
+            font.family: "monospace"
             font.pixelSize: win.scaledSize(11)
         }
 
@@ -864,7 +860,8 @@ ApplicationWindow {
             Material.elevation: 8
 
             background: Rectangle {
-                radius: 9
+                radius: 0
+                opacity: 0.9
                 color: win.darkMode ? "#22221f" : "#fffef2"
             }
 
@@ -944,10 +941,12 @@ ApplicationWindow {
                     font.pixelSize: win.scaledSize(16)
                 }
 
-                Button {
+                SquareDialogButton {
                     id: replaceCurrentButton
                     visible: win.replaceOpen
                     text: "Replace"
+                    darkMode: win.darkMode
+                    textScale: win.textScale
                     onClicked: {
                         if (win.searchMatchIndex < 0) return;
                         var start = win.searchMatches[win.searchMatchIndex];
@@ -958,9 +957,11 @@ ApplicationWindow {
                     }
                 }
 
-                Button {
+                SquareDialogButton {
                     visible: win.replaceOpen
                     text: "All"
+                    darkMode: win.darkMode
+                    textScale: win.textScale
                     onClicked: {
                         if (searchField.text.length === 0) return;
                         for (var i = win.searchMatches.length - 1; i >= 0; --i) {

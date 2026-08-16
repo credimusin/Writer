@@ -1,7 +1,7 @@
-QT += core gui widgets printsupport qml quick quickcontrols2 quickdialogs2 dbus
+QT += core gui widgets printsupport qml quick quickcontrols2 dbus
 
 CONFIG += c++17 release
-TARGET = omawrite
+TARGET = writer
 TEMPLATE = app
 
 HEADERS += \

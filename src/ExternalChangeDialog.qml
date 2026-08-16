@@ -9,7 +9,7 @@ Dialog {
     property bool darkMode: true
     property color textColor: darkMode ? "#d0d0d0" : "#42464c"
     property color strongTextColor: darkMode ? "#eeeeee" : "#222324"
-    property color activeButtonColor: "#428bca"
+    property color activeButtonColor: darkMode ? "#ffffff" : "#101010"
     property int containerWidth: 520
     property int containerHeight: 320
     property real textScale: 1
@@ -27,9 +27,11 @@ Dialog {
 
     onOpened: (deleted ? keepButton : reloadButton).forceActiveFocus()
 
+    Overlay.modal: Rectangle { color: "transparent" }
+
     background: Rectangle {
-        color: root.darkMode ? "#1a1a1a" : "#ffffff"
-        border.color: root.darkMode ? "#343434" : "#d8d8d8"
+        color: root.darkMode ? "#000000" : "#ffffff"
+        border.color: root.darkMode ? "#222222" : "#d8d8d8"
         radius: 0
     }
 
@@ -39,7 +41,7 @@ Dialog {
         Label {
             text: root.deleted ? "File removed" : "File changed"
             color: root.strongTextColor
-            font.family: "iA Writer Mono S"
+            font.family: "monospace"
             font.pixelSize: Math.round(16 * root.textScale)
             font.bold: true
         }
@@ -47,13 +49,13 @@ Dialog {
         Label {
             width: parent.width
             text: root.deleted
-                ? "This file was removed outside Omawrite. Keep your text as an unsaved document?"
+                ? "This file was removed outside Writer. Keep your text as an unsaved document?"
                 : (root.locallyModified
-                   ? "This file changed outside Omawrite. Reloading will discard your changes."
-                   : "This file changed outside Omawrite.")
+                   ? "This file changed outside Writer. Reloading will discard your changes."
+                   : "This file changed outside Writer.")
             color: root.textColor
             wrapMode: Text.Wrap
-            font.family: "iA Writer Mono S"
+            font.family: "monospace"
             font.pixelSize: Math.round(13 * root.textScale)
         }
     }
@@ -75,7 +77,6 @@ Dialog {
                 textScale: root.textScale
                 labelColor: root.deleted ? "#ffffff" : root.textColor
                 primary: root.deleted
-                activeColor: root.activeButtonColor
                 KeyNavigation.left: reloadButton
                 KeyNavigation.right: reloadButton
                 KeyNavigation.tab: reloadButton
@@ -93,7 +94,6 @@ Dialog {
                 primary: true
                 darkMode: root.darkMode
                 textScale: root.textScale
-                activeColor: root.activeButtonColor
                 KeyNavigation.left: keepButton
                 KeyNavigation.right: keepButton
                 KeyNavigation.tab: keepButton

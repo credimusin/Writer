@@ -54,11 +54,11 @@ public:
     static QString suggestedFileName(const QString &text);
 
     Q_INVOKABLE void attachDocument(QObject *textDocument);
-    Q_INVOKABLE void openDialog();
+    Q_INVOKABLE QString execOpenDialog();
     Q_INVOKABLE void open(const QUrl &url);
     Q_INVOKABLE void save();
     Q_INVOKABLE void saveForClose();
-    Q_INVOKABLE void saveAsDialog();
+    Q_INVOKABLE QString execSaveDialog();
     Q_INVOKABLE void saveAs(const QUrl &url);
     Q_INVOKABLE void fileDialogCanceled();
     Q_INVOKABLE void discardRecovery();
@@ -84,8 +84,6 @@ signals:
     void textScaleChanged();
     void themeColorsChanged();
     void closeAfterSave();
-    void openDialogRequested();
-    void saveDialogRequested(const QUrl &suggestedUrl);
     void saveSucceeded();
     void externalChangeDetected(bool deleted, bool locallyModified);
 
@@ -108,8 +106,6 @@ private:
     void clearRecovery();
     QString recoveryPath() const;
     void watchCurrentFile();
-    void loadOmarchyTheme();
-    void watchOmarchyTheme();
 
     QUrl m_fileUrl;
     bool m_modified = false;
@@ -135,9 +131,9 @@ private:
     QString m_recoveryPath;
     std::unique_ptr<QLockFile> m_recoveryLock;
 
-    QString m_themeBackground;
-    QString m_themeForeground;
-    QString m_themeAccent;
-    QString m_themeSelection;
+    QString m_themeBackground = QStringLiteral("#101010");
+    QString m_themeForeground = QStringLiteral("#f5f1e8");
+    QString m_themeAccent = QStringLiteral("#4a90e2");
+    QString m_themeSelection = QStringLiteral("#2c4a6b");
     QFileSystemWatcher m_themeWatcher;
 };
