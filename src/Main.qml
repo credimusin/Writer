@@ -170,13 +170,25 @@ ApplicationWindow {
     Shortcut {
         sequences: [StandardKey.Italic]
         context: Qt.WindowShortcut
-        onActivated: editor.wrapSelection("*", "*")
+        onActivated: editor.wrapSelection("_", "_")
     }
 
     Shortcut {
         sequence: "Ctrl+K"
         context: Qt.WindowShortcut
         onActivated: editor.insertLink()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+H"
+        context: Qt.WindowShortcut
+        onActivated: EditorMutations.toggleHeading(editor)
+    }
+
+    Shortcut {
+        sequence: "Ctrl+Shift+H"
+        context: Qt.WindowShortcut
+        onActivated: EditorMutations.clearHeading(editor)
     }
 
     Shortcut {
@@ -380,7 +392,7 @@ ApplicationWindow {
                 }
 
                 Label {
-                    text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
+                    text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nCtrl+H          Cycle Heading\nCtrl+Shift+H    Clear Heading\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
                     lineHeight: 1.5
                     color: win.textColor
                     font.family: "monospace"
@@ -483,7 +495,36 @@ ApplicationWindow {
                     forceActiveFocus();
                     var start = Math.min(selectionStart, selectionEnd);
                     var end = Math.max(selectionStart, selectionEnd);
+                    
+                    var isWrappedOutside = (start >= before.length && end <= text.length - after.length &&
+                        text.slice(start - before.length, start) === before &&
+                        text.slice(end, end + after.length) === after);
+
+                    if (isWrappedOutside) {
+                        var innerText = text.slice(start, end);
+                        EditorMutations.replaceRange(editor, start - before.length, end + after.length,
+                                                     innerText, 0, innerText.length);
+                        return;
+                    }
+
                     var selected = text.slice(start, end);
+
+                    if (selected.length === 0 && text.slice(start, start + after.length) === after) {
+                        cursorPosition = start + after.length;
+                        return;
+                    }
+
+                    var isWrappedInside = (selected.length >= before.length + after.length &&
+                        selected.slice(0, before.length) === before &&
+                        selected.slice(selected.length - after.length) === after);
+                    
+                    if (isWrappedInside) {
+                        var unwrappedText = selected.slice(before.length, selected.length - after.length);
+                        EditorMutations.replaceRange(editor, start, end,
+                                                     unwrappedText, 0, unwrappedText.length);
+                        return;
+                    }
+                    
                     EditorMutations.replaceRange(editor, start, end,
                                                  before + selected + after,
                                                  before.length,
@@ -664,9 +705,49 @@ ApplicationWindow {
                     if (returnKey && !commandModifier) {
                         smartReturn(event.modifiers & Qt.ShiftModifier);
                         event.accepted = true;
-                    } else if (!commandModifier && event.key === Qt.Key_Backspace
-                               && deleteParagraphBreakBehindCursor()) {
-                        event.accepted = true;
+                    } else if (!commandModifier && event.key === Qt.Key_Backspace) {
+                        if (deleteParagraphBreakBehindCursor()) {
+                            event.accepted = true;
+                        } else {
+                            var bpos = cursorPosition;
+                            var ranges = backend.hiddenRangesAt(bpos);
+                            var deletedMarker = false;
+                            for (var i = 0; i < ranges.length - 1; i++) {
+                                if (ranges[i].end === bpos && ranges[i+1].start === bpos && ranges[i].id === ranges[i+1].id) {
+                                    EditorMutations.replaceRange(editor, ranges[i].start, ranges[i+1].end, "");
+                                    event.accepted = true;
+                                    deletedMarker = true;
+                                    break;
+                                }
+                            }
+                            if (!deletedMarker) {
+                                var bSkipPos = skipHiddenBackward(bpos);
+                                if (bSkipPos !== bpos)
+                                    cursorPosition = bSkipPos;
+                            }
+                        }
+                    } else if (!commandModifier && event.key === Qt.Key_Space) {
+                        var spos = skipHiddenForward(cursorPosition);
+                        if (spos !== cursorPosition) {
+                            cursorPosition = spos;
+                        }
+                    } else if (!commandModifier && event.key === Qt.Key_Delete) {
+                        var dpos = cursorPosition;
+                        var dRanges = backend.hiddenRangesAt(dpos);
+                        var dDeletedMarker = false;
+                        for (var j = 0; j < dRanges.length - 1; j++) {
+                            if (dRanges[j].end === dpos && dRanges[j+1].start === dpos && dRanges[j].id === dRanges[j+1].id) {
+                                EditorMutations.replaceRange(editor, dRanges[j].start, dRanges[j+1].end, "");
+                                event.accepted = true;
+                                dDeletedMarker = true;
+                                break;
+                            }
+                        }
+                        if (!dDeletedMarker) {
+                            var dSkipPos = skipHiddenForward(dpos);
+                            if (dSkipPos !== dpos)
+                                cursorPosition = dSkipPos;
+                        }
                     } else if (!commandModifier && !(event.modifiers & Qt.ShiftModifier)
                                && event.key === Qt.Key_Right) {
                         moveCursorVisibly(1);

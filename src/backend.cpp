@@ -342,10 +342,8 @@ bool Backend::editorTextChanged() {
     m_lastDocumentText = text;
 
     if (m_document) {
-        const int blockCount = m_document->blockCount();
-        if (blockCount > m_formattedBlockCount)
-            reapplyTypographyToChange();
-        m_formattedBlockCount = blockCount;
+        reapplyTypographyToChange();
+        m_formattedBlockCount = m_document->blockCount();
     }
 
     scheduleWordCount();
@@ -366,20 +364,32 @@ QVariantList Backend::hiddenRangesAt(int position) const {
         return ranges;
 
     const int lineStart = block.position();
-    QList<QPair<int, int>> spans;
+    struct MarkerSpan {
+        int start;
+        int end;
+        int markupId;
+        bool operator<(const MarkerSpan &other) const {
+            return start < other.start;
+        }
+    };
+    QList<MarkerSpan> spans;
     const QList<MarkdownHighlighter::InlineMarkup> markup =
         MarkdownHighlighter::inlineMarkup(block.text());
+    int currentId = 0;
     for (const MarkdownHighlighter::InlineMarkup &item : markup) {
+        if (item.content.length == 0) continue;
         for (const MarkdownHighlighter::Span &marker : item.markers) {
             spans.append({lineStart + marker.start,
-                          lineStart + marker.start + marker.length});
+                          lineStart + marker.start + marker.length, currentId});
         }
+        currentId++;
     }
     std::sort(spans.begin(), spans.end());
 
     for (const auto &span : spans) {
-        ranges.append(QVariantMap{{QStringLiteral("start"), span.first},
-                                  {QStringLiteral("end"), span.second}});
+        ranges.append(QVariantMap{{QStringLiteral("start"), span.start},
+                                  {QStringLiteral("end"), span.end},
+                                  {QStringLiteral("id"), span.markupId}});
     }
     return ranges;
 }
@@ -621,8 +631,25 @@ void Backend::applyDocumentTypography() {
 
     m_formattingTypography = true;
     QTextCursor cursor(m_document);
-    cursor.select(QTextCursor::Document);
-    cursor.mergeBlockFormat(blockFormat);
+    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
+        QTextBlockFormat bf = blockFormat;
+        static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
+        static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$"));
+        if (headingRe.match(block.text()).hasMatch() || ruleRe.match(block.text()).hasMatch()) {
+            bf.setAlignment(Qt::AlignHCenter);
+            bf.clearBackground();
+            bf.setTopMargin(0);
+            bf.setBottomMargin(0);
+        } else {
+            bf.setAlignment(Qt::AlignLeft);
+            bf.clearBackground();
+            bf.setTopMargin(0);
+            bf.setBottomMargin(0);
+        }
+        cursor.setPosition(block.position());
+        cursor.select(QTextCursor::BlockUnderCursor);
+        cursor.mergeBlockFormat(bf);
+    }
     m_formattingTypography = false;
 
     m_document->setUndoRedoEnabled(undoEnabled);
@@ -647,9 +674,33 @@ void Backend::reapplyTypographyToChange() {
     m_formattingTypography = true;
     QTextCursor cursor(m_document);
     cursor.joinPreviousEditBlock();
-    cursor.setPosition(start);
-    cursor.setPosition(end, QTextCursor::KeepAnchor);
-    cursor.mergeBlockFormat(blockFormat);
+    
+    QTextBlock block = m_document->findBlock(start);
+    QTextBlock endBlock = m_document->findBlock(end);
+    
+    while (block.isValid() && block.position() <= endBlock.position()) {
+        QTextBlockFormat bf = blockFormat;
+        static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
+        static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$"));
+        if (headingRe.match(block.text()).hasMatch() || ruleRe.match(block.text()).hasMatch()) {
+            bf.setAlignment(Qt::AlignHCenter);
+            bf.clearBackground();
+            bf.setTopMargin(0);
+            bf.setBottomMargin(0);
+        } else {
+            bf.setAlignment(Qt::AlignLeft);
+            bf.clearBackground();
+            bf.setTopMargin(0);
+            bf.setBottomMargin(0);
+        }
+        cursor.setPosition(block.position());
+        cursor.select(QTextCursor::BlockUnderCursor);
+        cursor.mergeBlockFormat(bf);
+        
+        if (block == endBlock) break;
+        block = block.next();
+    }
+    
     cursor.endEditBlock();
     m_formattingTypography = false;
 }

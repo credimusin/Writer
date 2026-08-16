@@ -2,14 +2,43 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-PKGBUILD_DIR="$ROOT/pkgbuild"
+BUILD_DIR="$ROOT/build"
 
-if ! command -v makepkg >/dev/null 2>&1; then
-  echo "makepkg is required to build and install the Arch package." >&2
-  exit 1
+if [ ! -f "$BUILD_DIR/writer" ]; then
+  echo "Writer executable not found. Running build..."
+  "$ROOT/bin/build"
 fi
 
-"$ROOT/bin/build"
+echo "Installing Writer (requires sudo privileges)..."
+sudo install -Dm755 "$BUILD_DIR/writer" /usr/bin/writer
+sudo install -Dm644 "$ROOT/pkgbuild/writer.desktop" /usr/share/applications/writer.desktop
+sudo install -Dm644 "$ROOT/pkgbuild/writer.svg" /usr/share/icons/hicolor/scalable/apps/writer.svg
 
-cd "$PKGBUILD_DIR"
-exec makepkg -fsi "$@"
+# Export to host if running inside a container
+if [ -d "/run/host" ]; then
+    echo "Container detected. Exporting shortcut to host..."
+    
+    # Resolve real user home if run via sudo
+    if [ -n "${SUDO_USER:-}" ]; then
+        USER_HOME=$(eval echo "~$SUDO_USER")
+        CMD_PREFIX="sudo -u $SUDO_USER"
+    else
+        USER_HOME="$HOME"
+        CMD_PREFIX=""
+    fi
+
+    $CMD_PREFIX mkdir -p "$USER_HOME/.local/share/applications" "$USER_HOME/.local/share/icons/hicolor/scalable/apps"
+    $CMD_PREFIX cp "$ROOT/pkgbuild/writer.svg" "$USER_HOME/.local/share/icons/hicolor/scalable/apps/"
+    
+    EXEC_CMD="writer %f"
+    if command -v toolbox >/dev/null 2>&1; then
+        EXEC_CMD="toolbox run writer %f"
+    elif command -v distrobox-enter >/dev/null 2>&1; then
+        EXEC_CMD="distrobox-enter -n \"$HOSTNAME\" -- writer %f"
+    fi
+
+    sed "s/^Exec=writer %f/Exec=$EXEC_CMD/" "$ROOT/pkgbuild/writer.desktop" | $CMD_PREFIX tee "$USER_HOME/.local/share/applications/writer.desktop" > /dev/null
+    $CMD_PREFIX update-desktop-database "$USER_HOME/.local/share/applications" 2>/dev/null || true
+fi
+
+echo "Installation complete!"

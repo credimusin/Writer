@@ -19,7 +19,7 @@ public:
         int length;
     };
 
-    enum class InlineKind { Bold, Italic, Link };
+    enum class InlineKind { Bold, Italic, BoldItalic, Link };
 
     struct InlineMarkup {
         InlineKind kind;
@@ -37,7 +37,7 @@ protected:
 
 private:
     void rebuildFormats();
-    void highlightMarkers(const QString &text);
+    bool highlightMarkers(const QString &text);
     void highlightInline(const QString &text);
     void highlightSearch(const QString &text);
 
@@ -46,10 +46,12 @@ private:
     QString m_customForeground;
     QString m_customAccent;
     QTextCharFormat m_markerFormat;
+    QTextCharFormat m_ruleFormat;
     QTextCharFormat m_hiddenMarkerFormat;
     QTextCharFormat m_headingFormat;
     QTextCharFormat m_boldFormat;
     QTextCharFormat m_italicFormat;
+    QTextCharFormat m_boldItalicFormat;
     QTextCharFormat m_codeFormat;
     QTextCharFormat m_quoteFormat;
     QTextCharFormat m_linkFormat;

@@ -36,8 +36,13 @@ To install Writer system-wide (requires sudo privileges):
 - `Ctrl+Z`, `Ctrl+Shift+Z`, and `Ctrl+Y` handle undo and redo.
 - `Super+F` toggles fullscreen. Qt maps this key as `Meta+F`.
 - `Ctrl+F` searches the document. Use `Enter` or `Ctrl+G` for the next match and `Shift+Enter` for the previous match.
-- `Ctrl+B`, `Ctrl+I`, and `Ctrl+K` insert bold, italic, and link Markdown.
+- `Ctrl+B`, `Ctrl+I`, and `Ctrl+K` insert bold (`**`), italic (`_`), and link (`[]()`) Markdown.
+- `Ctrl+H` cycles through heading levels (H1 to H6).
+- `Ctrl+Shift+H` clears the heading format.
 - `Ctrl+?` shows the keyboard shortcut reference.
+
+### Markdown Syntax Hiding
+Writer automatically hides markdown syntax characters (like asterisks, underscores, and link brackets) for a cleaner reading and writing experience. They seamlessly reappear when their inner content becomes empty, or you can manage formatting entirely through shortcuts.
 
 Unsaved drafts are recovered after an abnormal exit. Writer also watches open files
 and warns before an external change can replace local work.
