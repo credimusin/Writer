@@ -411,9 +411,29 @@ bool Backend::editorTextChanged() {
     }
 
     scheduleWordCount();
-    setModified(true);
-    setStatus(QStringLiteral("Unsaved"));
-    scheduleRecovery();
+
+    bool isModified = true;
+    QByteArray currentUtf8 = text.toUtf8();
+    if (m_hasKnownFileContents) {
+        if (currentUtf8 == m_lastKnownFileContents) {
+            isModified = false;
+        }
+    } else {
+        if (text.isEmpty() || text == QStringLiteral("# Start writing\n")) {
+            // Depending on how initialization happens, might be completely empty
+            isModified = false;
+        }
+    }
+
+    setModified(isModified);
+    if (isModified) {
+        setStatus(QStringLiteral("Unsaved"));
+        scheduleRecovery();
+    } else {
+        setStatus(m_fileUrl.isValid() ? QStringLiteral("Saved") : QStringLiteral(""));
+        clearRecovery();
+    }
+    
     return true;
 }
 
@@ -519,8 +539,14 @@ void Backend::saveTo(const QUrl &url) {
         return;
     }
 
-    const QString targetName = QFileInfo(url.toLocalFile()).fileName();
-    QSaveFile file(url.toLocalFile());
+    QString localPath = url.toLocalFile();
+    if (QFileInfo(localPath).suffix().isEmpty()) {
+        localPath += QStringLiteral(".md");
+    }
+    QUrl finalUrl = QUrl::fromLocalFile(localPath);
+
+    const QString targetName = QFileInfo(localPath).fileName();
+    QSaveFile file(localPath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         m_closeAfterSave = false;
         setStatus(QStringLiteral("Could not save %1.").arg(targetName));
@@ -549,10 +575,10 @@ void Backend::saveTo(const QUrl &url) {
     m_closeAfterSave = false;
     m_lastKnownFileContents = contents;
     m_hasKnownFileContents = true;
-    setFileUrl(url);
+    setFileUrl(finalUrl);
     watchCurrentFile();
     QSettings().setValue(lastSaveDirectorySetting,
-                         QFileInfo(url.toLocalFile()).absolutePath());
+                         QFileInfo(localPath).absolutePath());
     setModified(false);
     setStatus(QStringLiteral("Saved %1").arg(fileName()));
     clearRecovery();
