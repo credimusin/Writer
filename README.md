@@ -32,6 +32,7 @@ To install Writer system-wide (requires sudo privileges):
 - `Ctrl+S` saves the document.
 - `Ctrl+Shift+S` saves as.
 - `Ctrl+O` opens a Markdown file.
+- `Ctrl+P` exports the document to a WYSIWYG PDF (preserves editor layout and formatting).
 - `Ctrl+N` opens a new Writer window.
 - `Ctrl+Z`, `Ctrl+Shift+Z`, and `Ctrl+Y` handle undo and redo.
 - `Super+F` toggles fullscreen. Qt maps this key as `Meta+F`.
@@ -39,6 +40,7 @@ To install Writer system-wide (requires sudo privileges):
 - `Ctrl+B`, `Ctrl+I`, and `Ctrl+K` insert bold (`**`), italic (`_`), and link (`[]()`) Markdown.
 - `Ctrl+H` cycles through heading levels (H1 to H6).
 - `Ctrl+Shift+H` clears the heading format.
+- `Ctrl+T` switch the visual theme.
 - `Ctrl+?` shows the keyboard shortcut reference.
 
 ### Markdown Syntax Hiding

@@ -271,25 +271,89 @@ void Backend::keepExternalVersion() {
     setStatus(QStringLiteral("Kept your version"));
 }
 
-void Backend::printDocument() {
+void Backend::exportPdf(const QUrl &url) {
+    if (!url.isLocalFile()) {
+        setStatus(QStringLiteral("Only local files can be saved as PDF."));
+        return;
+    }
+    
     if (!m_document) {
-        setStatus(QStringLiteral("There is no document to print."));
+        setStatus(QStringLiteral("There is no document to export."));
         return;
     }
 
     QPrinter printer(QPrinter::HighResolution);
-    QPrintDialog dialog(&printer);
-    dialog.setWindowTitle(QStringLiteral("Print %1").arg(fileName()));
-    dialog.winId();
-    if (dialog.windowHandle() && m_parentWindow)
-        dialog.windowHandle()->setTransientParent(m_parentWindow);
+    printer.setOutputFormat(QPrinter::PdfFormat);
+    printer.setOutputFileName(url.toLocalFile());
 
-    if (dialog.exec() == QDialog::Accepted) {
-        QTextDocument rendered;
-        rendered.setDefaultFont(m_document->defaultFont());
-        rendered.setMarkdown(currentDocumentText());
-        rendered.print(&printer);
+    // Clone to preserve the editor's exact layout (alignment, line heights, explicit empty lines)
+    std::unique_ptr<QTextDocument> rendered(m_document->clone());
+
+    QFont font = rendered->defaultFont();
+    if (font.pixelSize() > 0) {
+        font.setPointSize(qMax(10, font.pixelSize() * 72 / 96));
+        font.setPixelSize(-1);
     }
+    rendered->setDefaultFont(font);
+
+    QTextCursor cursor(rendered.get());
+    cursor.select(QTextCursor::Document);
+    QTextCharFormat charFormat;
+    charFormat.setForeground(Qt::black);
+    cursor.mergeCharFormat(charFormat);
+
+    for (QTextBlock block = rendered->begin(); block.isValid(); block = block.next()) {
+        QString text = block.text();
+        QList<QPair<int, int>> toDelete;
+
+        static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
+        QRegularExpressionMatch heading = headingRe.match(text);
+        if (heading.hasMatch()) {
+            int level = heading.capturedLength(1);
+            qreal scale = 1.0 + (6.0 - level) * 0.2;
+            QTextCharFormat fmt;
+            fmt.setFontPointSize(font.pointSize() * scale);
+            fmt.setFontWeight(QFont::Bold);
+
+            cursor.setPosition(block.position() + heading.capturedStart(3));
+            cursor.setPosition(block.position() + heading.capturedStart(3) + heading.capturedLength(3), QTextCursor::KeepAnchor);
+            cursor.mergeCharFormat(fmt);
+
+            toDelete.append({heading.capturedStart(1), heading.capturedLength(1) + heading.capturedLength(2)});
+        }
+
+        QList<MarkdownHighlighter::InlineMarkup> markup = MarkdownHighlighter::inlineMarkup(text);
+        for (const auto &item : markup) {
+            QTextCharFormat contentFmt;
+            if (item.kind == MarkdownHighlighter::InlineKind::Bold || item.kind == MarkdownHighlighter::InlineKind::BoldItalic)
+                contentFmt.setFontWeight(QFont::Bold);
+            if (item.kind == MarkdownHighlighter::InlineKind::Italic || item.kind == MarkdownHighlighter::InlineKind::BoldItalic)
+                contentFmt.setFontItalic(true);
+
+            cursor.setPosition(block.position() + item.content.start);
+            cursor.setPosition(block.position() + item.content.start + item.content.length, QTextCursor::KeepAnchor);
+            cursor.mergeCharFormat(contentFmt);
+
+            for (const auto &marker : item.markers) {
+                if (marker.length > 0)
+                    toDelete.append({marker.start, marker.length});
+            }
+        }
+
+        std::sort(toDelete.begin(), toDelete.end(), [](const QPair<int, int> &a, const QPair<int, int> &b) {
+            return a.first > b.first;
+        });
+
+        for (const auto &del : std::as_const(toDelete)) {
+            cursor.setPosition(block.position() + del.first);
+            cursor.setPosition(block.position() + del.first + del.second, QTextCursor::KeepAnchor);
+            cursor.removeSelectedText();
+        }
+    }
+
+    rendered->print(&printer);
+    
+    setStatus(QStringLiteral("Exported to PDF"));
 }
 
 void Backend::newWindow() {

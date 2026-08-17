@@ -63,7 +63,7 @@ public:
     Q_INVOKABLE void discardRecovery();
     Q_INVOKABLE void reloadFromDisk();
     Q_INVOKABLE void keepExternalVersion();
-    Q_INVOKABLE void printDocument();
+    Q_INVOKABLE void exportPdf(const QUrl &url);
     Q_INVOKABLE void newWindow();
     Q_INVOKABLE QString clipboardUrl() const;
     Q_INVOKABLE QString clipboardText() const;

@@ -234,6 +234,14 @@ ApplicationWindow {
     }
 
     Shortcut {
+        sequence: "Ctrl+P"
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            exportPdfDialog.open();
+        }
+    }
+
+    Shortcut {
         sequences: [StandardKey.FullScreen, "Meta+F", "F11"]
         context: Qt.ApplicationShortcut
         onActivated: toggleFullScreen()
@@ -359,6 +367,17 @@ ApplicationWindow {
         }
     }
 
+    FileDialog {
+        id: exportPdfDialog
+        title: "Export PDF"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["PDF files (*.pdf)", "All files (*)"]
+        onAccepted: {
+            if (selectedFile !== "")
+                backend.exportPdf(selectedFile);
+        }
+    }
+
     Dialog {
         id: shortcutsDialog
         modal: true
@@ -392,7 +411,7 @@ ApplicationWindow {
                 }
 
                 Label {
-                    text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nCtrl+H          Cycle Heading\nCtrl+Shift+H    Clear Heading\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
+                    text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+P          Export PDF\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nCtrl+H          Cycle Heading\nCtrl+Shift+H    Clear Heading\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
                     lineHeight: 1.5
                     color: win.textColor
                     font.family: "monospace"
@@ -761,6 +780,11 @@ ApplicationWindow {
                         movePage(event.key === Qt.Key_PageDown ? 1 : -1,
                                  event.modifiers & Qt.ShiftModifier);
                         event.accepted = true;
+                    } else if (!commandModifier && event.key === Qt.Key_Minus) {
+                        if (cursorPosition >= 1 && text.slice(cursorPosition - 1, cursorPosition) === "-") {
+                            EditorMutations.replaceRange(editor, cursorPosition - 1, cursorPosition, "—");
+                            event.accepted = true;
+                        }
                     }
                 }
 
