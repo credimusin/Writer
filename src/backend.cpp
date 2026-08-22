@@ -288,6 +288,7 @@ void Backend::exportPdf(const QUrl &url) {
 
     // Clone to preserve the editor's exact layout (alignment, line heights, explicit empty lines)
     std::unique_ptr<QTextDocument> rendered(m_document->clone());
+    MarkdownHighlighter highlighter(rendered.get()); // Highlights the clone and sets block userStates
 
     QFont font = rendered->defaultFont();
     if (font.pixelSize() > 0) {
@@ -304,6 +305,20 @@ void Backend::exportPdf(const QUrl &url) {
 
     for (QTextBlock block = rendered->begin(); block.isValid(); block = block.next()) {
         QString text = block.text();
+        
+        const bool inCodeBlock = (block.userState() == MarkdownHighlighter::StateInCodeBlock)
+            || MarkdownHighlighter::isFenceLine(text)
+            || MarkdownHighlighter::isClosingFence(text);
+
+        if (inCodeBlock) {
+            QTextCharFormat codeFmt;
+            codeFmt.setFontFamilies({QStringLiteral("monospace")});
+            cursor.setPosition(block.position());
+            cursor.setPosition(block.position() + text.length(), QTextCursor::KeepAnchor);
+            cursor.mergeCharFormat(codeFmt);
+            continue;
+        }
+
         QList<QPair<int, int>> toDelete;
 
         static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
@@ -311,8 +326,10 @@ void Backend::exportPdf(const QUrl &url) {
         if (heading.hasMatch()) {
             int level = heading.capturedLength(1);
             qreal scale = 1.0 + (6.0 - level) * 0.2;
+            const qreal baseSize = font.pointSizeF() > 0 ? font.pointSizeF()
+                : (font.pixelSize() > 0 ? font.pixelSize() * 72.0 / 96.0 : 12.0);
             QTextCharFormat fmt;
-            fmt.setFontPointSize(font.pointSize() * scale);
+            fmt.setFontPointSize(baseSize * scale);
             fmt.setFontWeight(QFont::Bold);
 
             cursor.setPosition(block.position() + heading.capturedStart(3));
@@ -446,6 +463,12 @@ QVariantList Backend::hiddenRangesAt(int position) const {
         m_document->findBlock(qBound(0, position, m_document->characterCount() - 1));
     if (!block.isValid())
         return ranges;
+
+    if (block.userState() == MarkdownHighlighter::StateInCodeBlock
+            || MarkdownHighlighter::isFenceLine(block.text())
+            || MarkdownHighlighter::isClosingFence(block.text())) {
+        return ranges;
+    }
 
     const int lineStart = block.position();
     struct MarkerSpan {
@@ -707,6 +730,15 @@ void Backend::scheduleWordCount() {
     m_wordCountTimer.start();
 }
 
+bool Backend::isInCodeBlock(int cursorPosition) const {
+    if (!m_document) return false;
+    QTextBlock block = m_document->findBlock(cursorPosition);
+    if (!block.isValid()) return false;
+    return (block.userState() == MarkdownHighlighter::StateInCodeBlock)
+        || MarkdownHighlighter::isFenceLine(block.text())
+        || MarkdownHighlighter::isClosingFence(block.text());
+}
+
 void Backend::applyDocumentTypography() {
     if (!m_document)
         return;
@@ -722,10 +754,15 @@ void Backend::applyDocumentTypography() {
     m_formattingTypography = true;
     QTextCursor cursor(m_document);
     for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
+        const QString text = block.text();
+        const bool inCodeBlock = (block.userState() == MarkdownHighlighter::StateInCodeBlock)
+            || MarkdownHighlighter::isFenceLine(text)
+            || MarkdownHighlighter::isClosingFence(text);
+
         QTextBlockFormat bf = blockFormat;
         static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
         static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$"));
-        if (headingRe.match(block.text()).hasMatch() || ruleRe.match(block.text()).hasMatch()) {
+        if (!inCodeBlock && (headingRe.match(text).hasMatch() || ruleRe.match(text).hasMatch())) {
             bf.setAlignment(Qt::AlignHCenter);
             bf.clearBackground();
             bf.setTopMargin(0);
@@ -769,10 +806,15 @@ void Backend::reapplyTypographyToChange() {
     QTextBlock endBlock = m_document->findBlock(end);
     
     while (block.isValid() && block.position() <= endBlock.position()) {
+        const QString text = block.text();
+        const bool inCodeBlock = (block.userState() == MarkdownHighlighter::StateInCodeBlock)
+            || MarkdownHighlighter::isFenceLine(text)
+            || MarkdownHighlighter::isClosingFence(text);
+
         QTextBlockFormat bf = blockFormat;
         static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
         static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$"));
-        if (headingRe.match(block.text()).hasMatch() || ruleRe.match(block.text()).hasMatch()) {
+        if (!inCodeBlock && (headingRe.match(text).hasMatch() || ruleRe.match(text).hasMatch())) {
             bf.setAlignment(Qt::AlignHCenter);
             bf.clearBackground();
             bf.setTopMargin(0);

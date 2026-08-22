@@ -220,7 +220,7 @@ ApplicationWindow {
         sequences: [StandardKey.SaveAs]
         context: Qt.ApplicationShortcut
         onActivated: {
-            saveDialog.currentFolder = backend.suggestedSaveUrl();
+            saveDialog.currentFile = backend.suggestedSaveUrl();
             saveDialog.open();
         }
     }
@@ -336,13 +336,14 @@ ApplicationWindow {
     Connections {
         target: backend
         function onSaveAsRequested() {
-            saveDialog.currentFolder = backend.suggestedSaveUrl();
+            saveDialog.currentFile = backend.suggestedSaveUrl();
             saveDialog.open();
         }
     }
 
     FileDialog {
         id: openDialog
+        objectName: "openDialog"
         title: "Open File"
         nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
         onAccepted: {
@@ -353,6 +354,7 @@ ApplicationWindow {
 
     FileDialog {
         id: saveDialog
+        objectName: "saveDialog"
         title: "Save File"
         fileMode: FileDialog.SaveFile
         nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
@@ -579,11 +581,12 @@ ApplicationWindow {
                     var lineStart = text.lastIndexOf("\n", cursorPosition - 1) + 1;
                     var line = text.slice(lineStart, cursorPosition);
                     var before = text.slice(0, cursorPosition);
-                    var fences = (before.match(/^\s*```/gm) || []).length;
-                    if ((fences % 2) === 1) {
+                    
+                    if (backend.isInCodeBlock(cursorPosition)) {
                         replaceSelectionWith("\n");
                         return;
                     }
+
                     var match = line.match(/^(\s*)([-+*]|\d+[.)]|>+)\s+(.*)$/);
                     if (match) {
                         if (match[3].length === 0) {
@@ -839,8 +842,12 @@ ApplicationWindow {
                 iconColor: win.mutedColor
                 tooltip: "Open"
                 onClicked: {
-                    var url = backend.execOpenDialog();
-                    if (url !== "") win.requestOpen(url);
+                    if (backend.modified) {
+                        win.pendingAction = "openDialog";
+                        unsavedChangesDialog.open();
+                    } else {
+                        openDialog.open();
+                    }
                 }
             }
             Label {

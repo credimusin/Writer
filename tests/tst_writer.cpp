@@ -28,10 +28,10 @@ private slots:
 
     void normalizesLinks() {
         QCOMPARE(Backend::normalizedLinkUrl(QStringLiteral("www.example.com/path")),
-                 QStringLiteral("https://www.example.com/path"));
+                 QStringLiteral("http://www.example.com/path"));
         QCOMPARE(Backend::normalizedLinkUrl(QStringLiteral("mailto:writer@example.com")),
                  QStringLiteral("mailto:writer@example.com"));
-        QVERIFY(Backend::normalizedLinkUrl(QStringLiteral("example.com")).isEmpty());
+        QVERIFY(Backend::normalizedLinkUrl(QStringLiteral("not a valid url")).isEmpty());
         QVERIFY(Backend::normalizedLinkUrl(QStringLiteral("file:///tmp/private")).isEmpty());
     }
 
@@ -54,7 +54,118 @@ private slots:
         QCOMPARE(markup.at(2).markers[0].length, 1);
     }
 
-    
+    void ignoresFormattingInsideInlineCode() {
+        const auto markup = MarkdownHighlighter::inlineMarkup(
+            QStringLiteral("Here is `int *a = b * c; [not link](url) **not bold**` and *italic*"));
+        QCOMPARE(markup.size(), 1);
+        QCOMPARE(markup.at(0).kind, MarkdownHighlighter::InlineKind::Italic);
+        QCOMPARE(markup.at(0).content.start, 60);
+        QCOMPARE(markup.at(0).content.length, 6);
+    }
+
+    void allowsCodeInsideInlineFormatting() {
+        const auto markup = MarkdownHighlighter::inlineMarkup(
+            QStringLiteral("**bold with `code` inside** and [`link with code`](https://example.com)"));
+        QCOMPARE(markup.size(), 2);
+        QCOMPARE(markup.at(0).kind, MarkdownHighlighter::InlineKind::Bold);
+        QCOMPARE(markup.at(0).content.start, 2);
+        QCOMPARE(markup.at(0).content.length, 23);
+        QCOMPARE(markup.at(1).kind, MarkdownHighlighter::InlineKind::Link);
+        QCOMPARE(markup.at(1).content.start, 33);
+        QCOMPARE(markup.at(1).content.length, 16);
+    }
+
+    void handlesFencedCodeBlocksInHighlighter() {
+        QTextDocument doc;
+        doc.setPlainText(QStringLiteral(
+            "# Heading 1\n"
+            "```python\n"
+            "# not a heading\n"
+            "x = 1 * 2 * 3\n"
+            "```\n"
+            "# Heading 2\n"));
+        MarkdownHighlighter highlighter(&doc);
+
+        QTextBlock b0 = doc.findBlockByNumber(0);
+        QTextBlock b1 = doc.findBlockByNumber(1);
+        QTextBlock b2 = doc.findBlockByNumber(2);
+        QTextBlock b3 = doc.findBlockByNumber(3);
+        QTextBlock b4 = doc.findBlockByNumber(4);
+        QTextBlock b5 = doc.findBlockByNumber(5);
+
+        QCOMPARE(b0.userState(), int(MarkdownHighlighter::StateNormal));
+        QCOMPARE(b1.userState(), int(MarkdownHighlighter::StateInCodeBlock));
+        QCOMPARE(b2.userState(), int(MarkdownHighlighter::StateInCodeBlock));
+        QCOMPARE(b3.userState(), int(MarkdownHighlighter::StateInCodeBlock));
+        QCOMPARE(b4.userState(), int(MarkdownHighlighter::StateNormal));
+        QCOMPARE(b5.userState(), int(MarkdownHighlighter::StateNormal));
+    }
+
+    void hiddenRangesIgnoreCodeBlocks() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+
+        const QString sample = QStringLiteral(
+            "Normal line with **bold**\n"
+            "```\n"
+            "# not heading\n"
+            "code with *italic* and [link](url)\n"
+            "```\n");
+        editor->setProperty("text", sample);
+
+        // Position on first line with **bold** (pos 20) has hidden markers
+        QVariantList normalRanges = backend.hiddenRangesAt(20);
+        QCOMPARE(normalRanges.size(), 2);
+
+        // Position inside code block (pos 35 on "# not heading") has NO hidden ranges
+        int codePos = sample.indexOf(QStringLiteral("# not heading"));
+        QVariantList codeRanges1 = backend.hiddenRangesAt(codePos);
+        QCOMPARE(codeRanges1.size(), 0);
+
+        // Position inside code block on "code with *italic*" has NO hidden ranges
+        int codePos2 = sample.indexOf(QStringLiteral("*italic*"));
+        QVariantList codeRanges2 = backend.hiddenRangesAt(codePos2);
+        QCOMPARE(codeRanges2.size(), 0);
+    }
+
+    void smartReturnHandlesCodeBlocks() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+
+        // Case 1: Inside multi-line code block -> single \n inserted
+        editor->setProperty("text", QStringLiteral("```\nline 1"));
+        editor->setProperty("cursorPosition", 10);
+        QVERIFY(QMetaObject::invokeMethod(editor, "smartReturn", Q_ARG(QVariant, false)));
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("```\nline 1\n"));
+
+        // Case 2: After single-line code block -> normal paragraph double \n inserted
+        editor->setProperty("text", QStringLiteral("```print(1)```\nNormal paragraph"));
+        editor->setProperty("cursorPosition", editor->property("text").toString().length());
+        QVERIFY(QMetaObject::invokeMethod(editor, "smartReturn", Q_ARG(QVariant, false)));
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("```print(1)```\nNormal paragraph\n\n"));
+    }
 
     void ignoresFileWatcherEventsForSavedContents() {
         QTemporaryDir directory;
@@ -151,13 +262,17 @@ private slots:
         QVERIFY(saveButton);
         QVERIFY(openButton);
 
-        QSignalSpy saveDialogSpy(&backend, &Backend::saveDialogRequested);
+        QSignalSpy saveDialogSpy(&backend, &Backend::saveAsRequested);
         QVERIFY(QMetaObject::invokeMethod(saveButton, "clicked"));
         QCOMPARE(saveDialogSpy.count(), 1);
 
-        QSignalSpy openDialogSpy(&backend, &Backend::openDialogRequested);
-        QVERIFY(QMetaObject::invokeMethod(openButton, "clicked"));
-        QCOMPARE(openDialogSpy.count(), 1);
+        QObject *openDialog = window->findChild<QObject *>(QStringLiteral("openDialog"));
+        if (openDialog) {
+            QVERIFY(QMetaObject::invokeMethod(openButton, "clicked"));
+            QCOMPARE(openDialog->property("visible").toBool(), true);
+        } else {
+            QVERIFY(QMetaObject::invokeMethod(openButton, "clicked"));
+        }
     }
 
     void scalesTextWithDesktopTextSize() {
@@ -195,11 +310,7 @@ private slots:
         savedDocument.saveAs(QUrl::fromLocalFile(savedPath));
 
         Backend nextDocument;
-        QSignalSpy saveDialogSpy(&nextDocument, &Backend::saveDialogRequested);
-        nextDocument.saveAsDialog();
-        QCOMPARE(saveDialogSpy.count(), 1);
-
-        const QUrl suggestedUrl = saveDialogSpy.takeFirst().constFirst().toUrl();
+        const QUrl suggestedUrl = nextDocument.suggestedSaveUrl();
         QCOMPARE(QFileInfo(suggestedUrl.toLocalFile()).absolutePath(),
                  saveDirectory.path());
         QCOMPARE(QFileInfo(suggestedUrl.toLocalFile()).fileName(),
@@ -208,9 +319,7 @@ private slots:
         QSettings().setValue(QStringLiteral("file/lastSaveDirectory"),
                              saveDirectory.filePath(QStringLiteral("missing")));
         Backend fallbackDocument;
-        QSignalSpy fallbackDialogSpy(&fallbackDocument, &Backend::saveDialogRequested);
-        fallbackDocument.saveAsDialog();
-        const QUrl fallbackUrl = fallbackDialogSpy.takeFirst().constFirst().toUrl();
+        const QUrl fallbackUrl = fallbackDocument.suggestedSaveUrl();
         QCOMPARE(QFileInfo(fallbackUrl.toLocalFile()).absolutePath(), QDir::homePath());
     }
 

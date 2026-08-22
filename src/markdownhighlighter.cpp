@@ -8,6 +8,7 @@
 MarkdownHighlighter::MarkdownHighlighter(QTextDocument *document)
     : QSyntaxHighlighter(document) {
     rebuildFormats();
+    rehighlight();
 }
 
 void MarkdownHighlighter::setDarkMode(bool darkMode) {
@@ -97,6 +98,14 @@ void MarkdownHighlighter::rebuildFormats() {
     m_codeFormat.setForeground(text);
     m_codeFormat.setBackground(codeBackground);
 
+    m_codeBlockFormat = QTextCharFormat();
+    m_codeBlockFormat.setForeground(text);
+    m_codeBlockFormat.setBackground(codeBackground);
+
+    m_codeFenceFormat = QTextCharFormat();
+    m_codeFenceFormat.setForeground(marker);
+    m_codeFenceFormat.setBackground(codeBackground);
+
     m_quoteFormat = QTextCharFormat();
     m_quoteFormat.setForeground(quote);
     m_quoteFormat.setFontItalic(true);
@@ -113,14 +122,75 @@ void MarkdownHighlighter::rebuildFormats() {
                                                    : QColor(QStringLiteral("#ffad42")));
 }
 
+bool MarkdownHighlighter::isFenceLine(const QString &text, QString *delimiter, QString *info) {
+    static const QRegularExpression fenceRe(QStringLiteral("^\\s{0,3}(`{3,}|~{3,})(.*)$"));
+    const QRegularExpressionMatch match = fenceRe.match(text);
+    if (!match.hasMatch())
+        return false;
+    if (delimiter)
+        *delimiter = match.captured(1);
+    if (info)
+        *info = match.captured(2).trimmed();
+    return true;
+}
+
+bool MarkdownHighlighter::isClosingFence(const QString &text, const QString &delimiter) {
+    static const QRegularExpression closingFenceRe(QStringLiteral("^\\s{0,3}(`{3,}|~{3,})\\s*$"));
+    const QRegularExpressionMatch match = closingFenceRe.match(text);
+    if (!match.hasMatch())
+        return false;
+    if (!delimiter.isEmpty()) {
+        const QString delim = match.captured(1);
+        if (delim.at(0) != delimiter.at(0) || delim.length() < delimiter.length())
+            return false;
+    }
+    return true;
+}
+
 void MarkdownHighlighter::highlightBlock(const QString &text) {
-    if (!text.isEmpty()) {
-        bool skipInline = highlightMarkers(text);
-        if (!skipInline && (text.contains(QLatin1Char('`')) || text.contains(QLatin1Char('*'))
-            || text.contains(QLatin1Char('_')) || text.contains(QLatin1Char('[')))) {
-            highlightInline(text);
+    int prevState = previousBlockState();
+    if (prevState < 0)
+        prevState = StateNormal;
+
+    if (prevState == StateInCodeBlock) {
+        if (isClosingFence(text)) {
+            setCurrentBlockState(StateNormal);
+            setFormat(0, text.length(), m_codeFenceFormat);
+        } else {
+            setCurrentBlockState(StateInCodeBlock);
+            setFormat(0, text.length(), m_codeBlockFormat);
+        }
+    } else {
+        QString delim;
+        QString info;
+        if (isFenceLine(text, &delim, &info)) {
+            // Check if closed on same line (e.g. ```code```)
+            int closingIdx = info.indexOf(delim);
+            if (closingIdx >= 0 && info.mid(closingIdx).trimmed() == delim) {
+                setCurrentBlockState(StateNormal);
+                setFormat(0, text.length(), m_codeBlockFormat);
+            } else {
+                setCurrentBlockState(StateInCodeBlock);
+                setFormat(0, text.length(), m_codeFenceFormat);
+                if (!info.isEmpty()) {
+                    int infoStart = text.indexOf(info);
+                    if (infoStart >= 0) {
+                        setFormat(infoStart, info.length(), m_codeFormat);
+                    }
+                }
+            }
+        } else {
+            setCurrentBlockState(StateNormal);
+            if (!text.isEmpty()) {
+                bool skipInline = highlightMarkers(text);
+                if (!skipInline && (text.contains(QLatin1Char('`')) || text.contains(QLatin1Char('*'))
+                    || text.contains(QLatin1Char('_')) || text.contains(QLatin1Char('[')))) {
+                    highlightInline(text);
+                }
+            }
         }
     }
+
     highlightSearch(text);
 }
 
@@ -205,15 +275,6 @@ bool MarkdownHighlighter::highlightMarkers(const QString &text) {
 }
 
 void MarkdownHighlighter::highlightInline(const QString &text) {
-    if (text.contains(QLatin1Char('`'))) {
-        static const QRegularExpression codeRe(QStringLiteral("`([^`]+)`"));
-        QRegularExpressionMatchIterator codeMatches = codeRe.globalMatch(text);
-        while (codeMatches.hasNext()) {
-            const QRegularExpressionMatch match = codeMatches.next();
-            setFormat(match.capturedStart(0), match.capturedLength(0), m_codeFormat);
-        }
-    }
-
     const QList<InlineMarkup> markup = inlineMarkup(text);
     for (const InlineMarkup &item : markup) {
         if (item.content.length == 0) continue;
@@ -228,6 +289,17 @@ void MarkdownHighlighter::highlightInline(const QString &text) {
         for (const Span &marker : item.markers)
             setFormat(marker.start, marker.length, m_hiddenMarkerFormat);
     }
+
+    if (text.contains(QLatin1Char('`'))) {
+        static const QRegularExpression codeRe(QStringLiteral("(`+)(.+?)\\1"));
+        QRegularExpressionMatchIterator codeMatches = codeRe.globalMatch(text);
+        while (codeMatches.hasNext()) {
+            const QRegularExpressionMatch match = codeMatches.next();
+            QTextCharFormat fmt = format(match.capturedStart(0));
+            fmt.merge(m_codeFormat);
+            setFormat(match.capturedStart(0), match.capturedLength(0), fmt);
+        }
+    }
 }
 
 QList<MarkdownHighlighter::InlineMarkup> MarkdownHighlighter::inlineMarkup(const QString &text) {
@@ -237,6 +309,28 @@ QList<MarkdownHighlighter::InlineMarkup> MarkdownHighlighter::inlineMarkup(const
         return markup;
     }
 
+    struct CodeSpan {
+        int start;
+        int end;
+    };
+    QList<CodeSpan> codeSpans;
+    if (text.contains(QLatin1Char('`'))) {
+        static const QRegularExpression inlineCodeRe(QStringLiteral("(`+)(.+?)\\1"));
+        QRegularExpressionMatchIterator it = inlineCodeRe.globalMatch(text);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            codeSpans.append({int(m.capturedStart(0)), int(m.capturedEnd(0))});
+        }
+    }
+
+    const auto overlapsCode = [&codeSpans](int start, int end) {
+        for (const auto &cs : codeSpans) {
+            if ((start >= cs.start && start < cs.end) || (end > cs.start && end <= cs.end))
+                return true;
+        }
+        return false;
+    };
+
     const auto span = [](const QRegularExpressionMatch &match, int group) {
         return Span{int(match.capturedStart(group)), int(match.capturedLength(group))};
     };
@@ -245,27 +339,33 @@ QList<MarkdownHighlighter::InlineMarkup> MarkdownHighlighter::inlineMarkup(const
     QRegularExpressionMatchIterator boldItalicMatches = boldItalicRe.globalMatch(text);
     while (boldItalicMatches.hasNext()) {
         const QRegularExpressionMatch match = boldItalicMatches.next();
-        markup.append({InlineKind::BoldItalic, span(match, 2),
-                       {span(match, 1), span(match, 3)}});
+        if (!overlapsCode(match.capturedStart(0), match.capturedEnd(0))) {
+            markup.append({InlineKind::BoldItalic, span(match, 2),
+                           {span(match, 1), span(match, 3)}});
+        }
     }
 
     static const QRegularExpression boldRe(QStringLiteral("(?<!\\*)(\\*\\*|__)(?!\\*)(.*?)(?<!\\*)(\\1)(?!\\*)"));
     QRegularExpressionMatchIterator boldMatches = boldRe.globalMatch(text);
     while (boldMatches.hasNext()) {
         const QRegularExpressionMatch match = boldMatches.next();
-        markup.append({InlineKind::Bold, span(match, 2),
-                       {span(match, 1), span(match, 3)}});
+        if (!overlapsCode(match.capturedStart(0), match.capturedEnd(0))) {
+            markup.append({InlineKind::Bold, span(match, 2),
+                           {span(match, 1), span(match, 3)}});
+        }
     }
 
     static const QRegularExpression italicRe(
-        QStringLiteral("(?<!\\*)\\*([^*\\n]*)\\*(?!\\*)|(?<!_)_([^_\\n]*)_(?!_)"));
+        QStringLiteral("(?<!\\*)\\*([^*\\n]+)\\*(?!\\*)|(?<!_)_([^_\\n]+)_(?!_)"));
     QRegularExpressionMatchIterator italicMatches = italicRe.globalMatch(text);
     while (italicMatches.hasNext()) {
         const QRegularExpressionMatch match = italicMatches.next();
-        const Span whole = span(match, 0);
-        const int contentIndex = match.capturedStart(1) >= 0 ? 1 : 2;
-        markup.append({InlineKind::Italic, span(match, contentIndex),
-                       {{whole.start, 1}, {whole.start + whole.length - 1, 1}}});
+        if (!overlapsCode(match.capturedStart(0), match.capturedEnd(0))) {
+            const Span whole = span(match, 0);
+            const int contentIndex = match.capturedStart(1) >= 0 ? 1 : 2;
+            markup.append({InlineKind::Italic, span(match, contentIndex),
+                           {{whole.start, 1}, {whole.start + whole.length - 1, 1}}});
+        }
     }
 
     static const QRegularExpression linkRe(
@@ -273,12 +373,14 @@ QList<MarkdownHighlighter::InlineMarkup> MarkdownHighlighter::inlineMarkup(const
     QRegularExpressionMatchIterator linkMatches = linkRe.globalMatch(text);
     while (linkMatches.hasNext()) {
         const QRegularExpressionMatch match = linkMatches.next();
-        const Span whole = span(match, 0);
-        const Span content = span(match, 1);
-        const int contentEnd = content.start + content.length;
-        markup.append({InlineKind::Link, content,
-                       {{whole.start, 1},
-                        {contentEnd, whole.start + whole.length - contentEnd}}});
+        if (!overlapsCode(match.capturedStart(0), match.capturedEnd(0))) {
+            const Span whole = span(match, 0);
+            const Span content = span(match, 1);
+            const int contentEnd = content.start + content.length;
+            markup.append({InlineKind::Link, content,
+                           {{whole.start, 1},
+                            {contentEnd, whole.start + whole.length - contentEnd}}});
+        }
     }
 
     return markup;

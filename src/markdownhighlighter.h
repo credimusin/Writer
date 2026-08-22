@@ -10,6 +10,11 @@ class MarkdownHighlighter : public QSyntaxHighlighter {
 public:
     explicit MarkdownHighlighter(QTextDocument *document);
 
+    enum BlockState {
+        StateNormal = 0,
+        StateInCodeBlock = 1
+    };
+
     void setDarkMode(bool darkMode);
     void setColors(const QString &background, const QString &foreground, const QString &accent);
     void setSearch(const QString &query, int currentMatchStart);
@@ -32,6 +37,10 @@ public:
     // Backend::hiddenRangesAt) to skip the caret over the hidden markers.
     static QList<InlineMarkup> inlineMarkup(const QString &text);
 
+    // Helpers to check code fences
+    static bool isFenceLine(const QString &text, QString *delimiter = nullptr, QString *info = nullptr);
+    static bool isClosingFence(const QString &text, const QString &delimiter = QString());
+
 protected:
     void highlightBlock(const QString &text) override;
 
@@ -53,6 +62,8 @@ private:
     QTextCharFormat m_italicFormat;
     QTextCharFormat m_boldItalicFormat;
     QTextCharFormat m_codeFormat;
+    QTextCharFormat m_codeBlockFormat;
+    QTextCharFormat m_codeFenceFormat;
     QTextCharFormat m_quoteFormat;
     QTextCharFormat m_linkFormat;
     QString m_searchQuery;

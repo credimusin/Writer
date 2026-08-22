@@ -1,8 +1,6 @@
 # Writer
 
-A dead-simple Markdown writing app built with Qt Quick and C++ that automatically follows system dark/light mode.
-
-
+A dead-simple Markdown writing app built with Qt Quick and C++.
 
 
 ## Build and Run
