@@ -111,6 +111,21 @@ private:
     void clearRecovery();
     QString recoveryPath() const;
     void watchCurrentFile();
+    void updateModifiedState();
+    QString serializeFileContent(const QString &bodyText) const;
+    void initNewDocumentMetadata();
+
+    struct Metadata {
+        bool hasMetadata = false;
+        QString title;
+        QString author;
+        QString topic;
+        QString created;
+        QString updated;
+        QList<QPair<QString, QString>> otherFields;
+    };
+
+    Metadata m_metadata;
 
     QUrl m_fileUrl;
     bool m_modified = false;

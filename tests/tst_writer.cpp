@@ -125,12 +125,207 @@ private slots:
         QCOMPARE(updatedMeta.value("topic").toString(), QStringLiteral("Fiction"));
         QCOMPARE(backend.defaultAuthor(), QStringLiteral("Author X"));
 
+        // Editor text is clean body text (no frontmatter clutter in editor)
         QString text = editor->property("text").toString();
-        QVERIFY(text.startsWith(QStringLiteral("---\n")));
-        QVERIFY(text.contains(QStringLiteral("title: New Title")));
-        QVERIFY(text.contains(QStringLiteral("author: Author X")));
-        QVERIFY(text.contains(QStringLiteral("topic: Fiction")));
-        QVERIFY(text.contains(QStringLiteral("Hello world")));
+        QCOMPARE(text, QStringLiteral("# My Story\nHello world"));
+
+        // When saved to disk, frontmatter is written
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString filePath = tempDir.filePath(QStringLiteral("Story.md"));
+        backend.saveAs(QUrl::fromLocalFile(filePath));
+
+        QFile savedFile(filePath);
+        QVERIFY(savedFile.open(QIODevice::ReadOnly | QIODevice::Text));
+        QString savedContent = QString::fromUtf8(savedFile.readAll());
+        QVERIFY(savedContent.startsWith(QStringLiteral("---\n")));
+        QVERIFY(savedContent.contains(QStringLiteral("title: New Title")));
+        QVERIFY(savedContent.contains(QStringLiteral("author: Author X")));
+        QVERIFY(savedContent.contains(QStringLiteral("topic: Fiction")));
+        QVERIFY(savedContent.contains(QStringLiteral("# My Story\nHello world")));
+    }
+
+    void autoInitializesAndSavesMetadata() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        Backend backend;
+        backend.setDefaultAuthor(QStringLiteral("Auto Author"));
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+
+        // Editor text starts clean (empty)
+        QString initialText = editor->property("text").toString();
+        QCOMPARE(initialText, QString());
+
+        // Metadata is initialized in memory
+        QVariantMap meta = backend.documentMetadata();
+        QCOMPARE(meta.value("author").toString(), QStringLiteral("Auto Author"));
+        QVERIFY(!meta.value("created").toString().isEmpty());
+        QVERIFY(!meta.value("updated").toString().isEmpty());
+
+        QCOMPARE(backend.modified(), false);
+        QCOMPARE(backend.wordCount(), 0);
+
+        editor->setProperty("text", QStringLiteral("# Automatic Novel\nSome actual body content here."));
+        QCOMPARE(backend.modified(), true);
+        QTRY_COMPARE(backend.wordCount(), 7);
+
+        QCOMPARE(Backend::suggestedFileName(editor->property("text").toString()), QStringLiteral("Automatic Novel.md"));
+
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString filePath = tempDir.filePath(QStringLiteral("Automatic Novel.md"));
+        backend.saveAs(QUrl::fromLocalFile(filePath));
+
+        // File on disk has YAML frontmatter
+        QFile savedFile(filePath);
+        QVERIFY(savedFile.open(QIODevice::ReadOnly | QIODevice::Text));
+        QString savedContent = QString::fromUtf8(savedFile.readAll());
+        QVERIFY(savedContent.contains(QStringLiteral("title: Automatic Novel")));
+        QVERIFY(savedContent.contains(QStringLiteral("author: Auto Author")));
+        QVERIFY(savedContent.contains(QStringLiteral("updated:")));
+
+        // When reopening the file, editor text is clean body
+        backend.open(QUrl::fromLocalFile(filePath));
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("# Automatic Novel\nSome actual body content here."));
+        QVariantMap reopenedMeta = backend.documentMetadata();
+        QCOMPARE(reopenedMeta.value("title").toString(), QStringLiteral("Automatic Novel"));
+        QCOMPARE(reopenedMeta.value("author").toString(), QStringLiteral("Auto Author"));
+    }
+
+    void preservesCustomFrontmatterAndRecovery() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString filePath = tempDir.filePath(QStringLiteral("Custom.md"));
+
+        QFile initFile(filePath);
+        QVERIFY(initFile.open(QIODevice::WriteOnly | QIODevice::Text));
+        initFile.write(
+            "---\n"
+            "title: Custom Fields\n"
+            "author: Alice\n"
+            "category: Space Opera\n"
+            "draft: true\n"
+            "---\n\n"
+            "# Chapter 1\n"
+            "Deep space silence.\n"
+        );
+        initFile.close();
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        backend.open(QUrl::fromLocalFile(filePath));
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("# Chapter 1\nDeep space silence.\n"));
+
+        // Save and verify custom fields are preserved
+        backend.save();
+        QFile savedFile(filePath);
+        QVERIFY(savedFile.open(QIODevice::ReadOnly | QIODevice::Text));
+        QString savedContent = QString::fromUtf8(savedFile.readAll());
+        QVERIFY(savedContent.contains(QStringLiteral("category: Space Opera")));
+        QVERIFY(savedContent.contains(QStringLiteral("draft: true")));
+    }
+
+    void handlesCrlfLineEndings() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString filePath = tempDir.filePath(QStringLiteral("CRLF.md"));
+
+        QFile initFile(filePath);
+        QVERIFY(initFile.open(QIODevice::WriteOnly));
+        initFile.write(
+            "---\r\n"
+            "title: Windows Doc\r\n"
+            "author: Bob\r\n"
+            "---\r\n\r\n"
+            "# Windows Chapter\r\n"
+            "Text with CRLF\r\n"
+        );
+        initFile.close();
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        backend.open(QUrl::fromLocalFile(filePath));
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("# Windows Chapter\nText with CRLF\n"));
+        QCOMPARE(backend.modified(), false);
+    }
+
+    void tracksMetadataModifications() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString filePath = tempDir.filePath(QStringLiteral("Track.md"));
+
+        QFile initFile(filePath);
+        QVERIFY(initFile.open(QIODevice::WriteOnly | QIODevice::Text));
+        initFile.write(
+            "---\n"
+            "title: Original Title\n"
+            "author: Alice\n"
+            "---\n\n"
+            "# Original Heading\n"
+            "Body content.\n"
+        );
+        initFile.close();
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        backend.open(QUrl::fromLocalFile(filePath));
+        QCOMPARE(backend.modified(), false);
+
+        // Modifying metadata sets modified = true
+        backend.updateDocumentMetadata(QStringLiteral("Altered Title"), QStringLiteral("Alice"), QString());
+        QCOMPARE(backend.modified(), true);
+
+        // Typing in editor and reverting text should NOT clear modified since metadata is still altered
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+        editor->setProperty("text", QStringLiteral("# Original Heading\nBody content.\nExtra"));
+        QCOMPARE(backend.modified(), true);
+        editor->setProperty("text", QStringLiteral("# Original Heading\nBody content.\n"));
+        QCOMPARE(backend.modified(), true);
+
+        // Reverting metadata to original restores unmodified state
+        backend.updateDocumentMetadata(QStringLiteral("Original Title"), QStringLiteral("Alice"), QString());
+        QCOMPARE(backend.modified(), false);
     }
 
     void ignoresFormattingInsideInlineCode() {
@@ -257,8 +452,14 @@ private slots:
         backend.saveAs(QUrl::fromLocalFile(path));
         QVERIFY(QFileInfo::exists(path));
 
+        QFile readFile(path);
+        QVERIFY(readFile.open(QIODevice::ReadOnly));
+        const QByteArray savedBytes = readFile.readAll();
+        readFile.close();
+
         QFile sameContents(path);
         QVERIFY(sameContents.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        sameContents.write(savedBytes);
         sameContents.close();
         QTest::qWait(100);
         QCOMPARE(externalChangeSpy.count(), 0);

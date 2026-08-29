@@ -19,6 +19,7 @@
 #include <QStandardPaths>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonArray>
 #include <QFileDialog>
 #include <QLockFile>
 #include <QSaveFile>
@@ -95,6 +96,17 @@ static FrontmatterInfo parseFrontmatter(const QString &text) {
         }
     }
     return info;
+}
+
+static QString sanitizeFileName(QString name) {
+    name.replace(QRegularExpression(QStringLiteral("[/\\x00-\\x1f\\x7f]")),
+                 QStringLiteral("-"));
+    name = name.left(120).trimmed();
+    if (name.isEmpty() || name == QStringLiteral(".") || name == QStringLiteral(".."))
+        name = QStringLiteral("Untitled");
+    if (!name.endsWith(QStringLiteral(".md"), Qt::CaseInsensitive))
+        name += QStringLiteral(".md");
+    return name;
 }
 
 QString Backend::normalizedLinkUrl(const QString &clipboardText) {
@@ -254,6 +266,10 @@ void Backend::attachDocument(QObject *textDocument) {
 
     applyDocumentTypography();
     restoreRecovery();
+
+    if (!m_fileUrl.isValid() && !m_metadata.hasMetadata) {
+        initNewDocumentMetadata();
+    }
 }
 
 void Backend::open(const QUrl &url) {
@@ -270,7 +286,39 @@ void Backend::open(const QUrl &url) {
     }
 
     const QByteArray contents = file.readAll();
-    loadDocumentText(QString::fromUtf8(contents));
+    const QString fullText = QString::fromUtf8(contents);
+    const FrontmatterInfo info = parseFrontmatter(fullText);
+
+    if (info.hasFrontmatter) {
+        m_metadata.hasMetadata = true;
+        m_metadata.title = info.title;
+        m_metadata.author = info.author.isEmpty() ? defaultAuthor() : info.author;
+        m_metadata.topic = info.topic;
+        m_metadata.created = info.created;
+        m_metadata.updated = info.updated;
+        m_metadata.otherFields = info.otherFields;
+
+        QString body = fullText.mid(info.length);
+        if (body.startsWith(QLatin1String("\r\n")))
+            body = body.mid(2);
+        else if (body.startsWith(QLatin1Char('\n')))
+            body = body.mid(1);
+        loadDocumentText(body);
+    } else {
+        m_metadata.hasMetadata = false;
+        m_metadata.title.clear();
+        m_metadata.author = defaultAuthor();
+        m_metadata.topic.clear();
+        const QFileInfo fi(url.toLocalFile());
+        QDateTime bTime = fi.birthTime();
+        if (!bTime.isValid()) bTime = fi.lastModified();
+        m_metadata.created = bTime.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+        m_metadata.updated = fi.lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+        m_metadata.otherFields.clear();
+
+        loadDocumentText(fullText);
+    }
+
     clearRecovery();
     m_lastKnownFileContents = contents;
     m_hasKnownFileContents = true;
@@ -473,6 +521,54 @@ QString Backend::clipboardText() const {
     return mimeData && mimeData->hasText() ? mimeData->text() : QString();
 }
 
+void Backend::updateModifiedState() {
+    const QString text = currentDocumentText();
+    bool isModified = true;
+
+    if (m_hasKnownFileContents) {
+        const QString fullText = QString::fromUtf8(m_lastKnownFileContents);
+        const FrontmatterInfo info = parseFrontmatter(fullText);
+        QString diskBody = info.hasFrontmatter ? fullText.mid(info.length) : fullText;
+        if (diskBody.startsWith(QLatin1String("\r\n")))
+            diskBody = diskBody.mid(2);
+        else if (diskBody.startsWith(QLatin1Char('\n')))
+            diskBody = diskBody.mid(1);
+        diskBody.remove(QLatin1Char('\r'));
+
+        QString currentNormalized = text;
+        currentNormalized.remove(QLatin1Char('\r'));
+
+        const bool textMatches = (currentNormalized == diskBody);
+        bool metaMatches = true;
+        if (info.hasFrontmatter != m_metadata.hasMetadata
+                || info.title != m_metadata.title
+                || (info.author.isEmpty() ? defaultAuthor() : info.author) != m_metadata.author
+                || info.topic != m_metadata.topic
+                || info.otherFields != m_metadata.otherFields) {
+            metaMatches = false;
+        }
+
+        if (textMatches && metaMatches) {
+            isModified = false;
+        }
+    } else {
+        const bool textEmpty = text.isEmpty() || text == QStringLiteral("# Start writing\n");
+        const bool metaEmpty = m_metadata.title.isEmpty() && m_metadata.topic.isEmpty();
+        if (textEmpty && metaEmpty) {
+            isModified = false;
+        }
+    }
+
+    setModified(isModified);
+    if (isModified) {
+        setStatus(QStringLiteral("Unsaved"));
+        scheduleRecovery();
+    } else {
+        setStatus(m_fileUrl.isValid() ? QStringLiteral("Saved") : QStringLiteral(""));
+        clearRecovery();
+    }
+}
+
 bool Backend::editorTextChanged() {
     if (m_loading || m_formattingTypography)
         return false;
@@ -488,29 +584,7 @@ bool Backend::editorTextChanged() {
     }
 
     scheduleWordCount();
-
-    bool isModified = true;
-    QByteArray currentUtf8 = text.toUtf8();
-    if (m_hasKnownFileContents) {
-        if (currentUtf8 == m_lastKnownFileContents) {
-            isModified = false;
-        }
-    } else {
-        if (text.isEmpty() || text == QStringLiteral("# Start writing\n")) {
-            // Depending on how initialization happens, might be completely empty
-            isModified = false;
-        }
-    }
-
-    setModified(isModified);
-    if (isModified) {
-        setStatus(QStringLiteral("Unsaved"));
-        scheduleRecovery();
-    } else {
-        setStatus(m_fileUrl.isValid() ? QStringLiteral("Saved") : QStringLiteral(""));
-        clearRecovery();
-    }
-    
+    updateModifiedState();
     return true;
 }
 
@@ -625,32 +699,38 @@ void Backend::saveTo(const QUrl &url) {
         return;
     }
 
-    const FrontmatterInfo info = parseFrontmatter(currentDocumentText());
-    if (info.hasFrontmatter && m_document) {
-        const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
-        if (info.updated != now) {
-            QString fmText = currentDocumentText().left(info.length);
-            static const QRegularExpression updatedRe(
-                QStringLiteral(R"((updated|lastmod|modified):\s*[^\r\n]*)"),
-                QRegularExpression::CaseInsensitiveOption
-            );
-            if (updatedRe.match(fmText).hasMatch()) {
-                fmText.replace(updatedRe, QStringLiteral("updated: %1").arg(now));
-                QTextCursor cursor(m_document);
-                cursor.setPosition(0);
-                cursor.setPosition(info.length, QTextCursor::KeepAnchor);
-                cursor.insertText(fmText);
-            }
-        }
-    }
-
     QString localPath = url.toLocalFile();
     if (QFileInfo(localPath).suffix().isEmpty()) {
         localPath += QStringLiteral(".md");
     }
-    QUrl finalUrl = QUrl::fromLocalFile(localPath);
-
     const QString targetName = QFileInfo(localPath).fileName();
+    const QString fileBaseName = QFileInfo(localPath).completeBaseName();
+    const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+
+    if (m_metadata.title.trimmed().isEmpty()) {
+        QString body = currentDocumentText();
+        QString firstLine = body.section(QLatin1Char('\n'), 0, 0).trimmed();
+        if (firstLine.startsWith(QLatin1Char('#'))) {
+            firstLine = firstLine.remove(QRegularExpression(QStringLiteral("^#+\\s*"))).trimmed();
+        }
+        if (!firstLine.isEmpty()) {
+            m_metadata.title = firstLine.left(100);
+        } else if (fileBaseName != QStringLiteral("Untitled")) {
+            m_metadata.title = fileBaseName;
+        }
+    }
+    if (m_metadata.author.isEmpty()) {
+        m_metadata.author = defaultAuthor();
+    }
+    if (m_metadata.created.isEmpty()) {
+        m_metadata.created = now;
+    }
+    m_metadata.updated = now;
+    m_metadata.hasMetadata = true;
+
+    const QString fileContent = serializeFileContent(currentDocumentText());
+
+    QUrl finalUrl = QUrl::fromLocalFile(localPath);
     QSaveFile file(localPath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         m_closeAfterSave = false;
@@ -658,7 +738,7 @@ void Backend::saveTo(const QUrl &url) {
         return;
     }
 
-    const QByteArray contents = currentDocumentText().toUtf8();
+    const QByteArray contents = fileContent.toUtf8();
     file.write(contents);
 
     // QSaveFile commits by replacing the target. Stop watching the old inode
@@ -680,6 +760,7 @@ void Backend::saveTo(const QUrl &url) {
     m_closeAfterSave = false;
     m_lastKnownFileContents = contents;
     m_hasKnownFileContents = true;
+    m_lastDocumentText = currentDocumentText();
     setFileUrl(finalUrl);
     watchCurrentFile();
     QSettings().setValue(lastSaveDirectorySetting,
@@ -711,8 +792,29 @@ void Backend::writeRecovery() {
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly))
         return;
+
+    QJsonObject metaObj;
+    metaObj[QStringLiteral("hasMetadata")] = m_metadata.hasMetadata;
+    metaObj[QStringLiteral("title")] = m_metadata.title;
+    metaObj[QStringLiteral("author")] = m_metadata.author;
+    metaObj[QStringLiteral("topic")] = m_metadata.topic;
+    metaObj[QStringLiteral("created")] = m_metadata.created;
+    metaObj[QStringLiteral("updated")] = m_metadata.updated;
+
+    if (!m_metadata.otherFields.isEmpty()) {
+        QJsonArray otherArr;
+        for (const auto &pair : m_metadata.otherFields) {
+            QJsonObject fieldObj;
+            fieldObj[QStringLiteral("key")] = pair.first;
+            fieldObj[QStringLiteral("value")] = pair.second;
+            otherArr.append(fieldObj);
+        }
+        metaObj[QStringLiteral("otherFields")] = otherArr;
+    }
+
     const QJsonObject recovery{{QStringLiteral("fileUrl"), m_fileUrl.toString()},
-                               {QStringLiteral("text"), currentDocumentText()}};
+                               {QStringLiteral("text"), currentDocumentText()},
+                               {QStringLiteral("metadata"), metaObj}};
     file.write(QJsonDocument(recovery).toJson(QJsonDocument::Compact));
     file.commit();
 }
@@ -726,6 +828,26 @@ void Backend::restoreRecovery() {
         return;
     const QJsonObject recovery = json.object();
     loadDocumentText(recovery.value(QStringLiteral("text")).toString());
+
+    if (recovery.contains(QStringLiteral("metadata"))) {
+        QJsonObject metaObj = recovery.value(QStringLiteral("metadata")).toObject();
+        m_metadata.hasMetadata = metaObj.value(QStringLiteral("hasMetadata")).toBool();
+        m_metadata.title = metaObj.value(QStringLiteral("title")).toString();
+        m_metadata.author = metaObj.value(QStringLiteral("author")).toString();
+        m_metadata.topic = metaObj.value(QStringLiteral("topic")).toString();
+        m_metadata.created = metaObj.value(QStringLiteral("created")).toString();
+        m_metadata.updated = metaObj.value(QStringLiteral("updated")).toString();
+        m_metadata.otherFields.clear();
+        if (metaObj.contains(QStringLiteral("otherFields"))) {
+            const QJsonArray otherArr = metaObj.value(QStringLiteral("otherFields")).toArray();
+            for (const auto &val : otherArr) {
+                const QJsonObject fieldObj = val.toObject();
+                m_metadata.otherFields.append({fieldObj.value(QStringLiteral("key")).toString(),
+                                               fieldObj.value(QStringLiteral("value")).toString()});
+            }
+        }
+    }
+
     const QUrl recoveredUrl(recovery.value(QStringLiteral("fileUrl")).toString());
     QFile diskFile(recoveredUrl.toLocalFile());
     if (recoveredUrl.isLocalFile() && diskFile.open(QIODevice::ReadOnly)) {
@@ -785,8 +907,15 @@ QUrl Backend::suggestedSaveUrl() const {
     const QDir directory = savedDirectory.isEmpty() || !QDir(savedDirectory).exists()
         ? QDir::home()
         : QDir(savedDirectory);
-    return QUrl::fromLocalFile(
-        directory.filePath(suggestedFileName(currentDocumentText())));
+
+    QString name;
+    if (!m_metadata.title.trimmed().isEmpty()) {
+        name = sanitizeFileName(m_metadata.title.trimmed());
+    } else {
+        name = suggestedFileName(currentDocumentText());
+    }
+
+    return QUrl::fromLocalFile(directory.filePath(name));
 }
 
 QString Backend::currentDocumentText() const {
@@ -794,15 +923,56 @@ QString Backend::currentDocumentText() const {
 }
 
 int Backend::countWords(const QString &text) {
+    const FrontmatterInfo info = parseFrontmatter(text);
+    QString body = text;
+    if (info.hasFrontmatter && info.length <= text.length()) {
+        body = text.mid(info.length);
+    }
     static const QRegularExpression wordRe(
         QStringLiteral("[\\p{L}\\p{N}]+(?:['-][\\p{L}\\p{N}]+)*"));
     int count = 0;
-    QRegularExpressionMatchIterator it = wordRe.globalMatch(text);
+    QRegularExpressionMatchIterator it = wordRe.globalMatch(body);
     while (it.hasNext()) {
         it.next();
         ++count;
     }
     return count;
+}
+
+void Backend::initNewDocumentMetadata() {
+    m_metadata.hasMetadata = true;
+    m_metadata.author = defaultAuthor();
+    const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+    m_metadata.created = now;
+    m_metadata.updated = now;
+    m_metadata.title.clear();
+    m_metadata.topic.clear();
+    m_metadata.otherFields.clear();
+}
+
+QString Backend::serializeFileContent(const QString &bodyText) const {
+    const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+    const QString titleToSet = m_metadata.title;
+    const QString authorStr = m_metadata.author.isEmpty() ? defaultAuthor() : m_metadata.author;
+    const QString createdStr = m_metadata.created.isEmpty() ? now : m_metadata.created;
+    const QString updatedStr = now;
+
+    QString yaml = QStringLiteral("---\n");
+    if (!titleToSet.isEmpty())
+        yaml += QStringLiteral("title: %1\n").arg(titleToSet);
+    if (!authorStr.isEmpty())
+        yaml += QStringLiteral("author: %1\n").arg(authorStr);
+    if (!m_metadata.topic.isEmpty())
+        yaml += QStringLiteral("topic: %1\n").arg(m_metadata.topic);
+    yaml += QStringLiteral("created: %1\n").arg(createdStr);
+    yaml += QStringLiteral("updated: %1\n").arg(updatedStr);
+
+    for (const auto &pair : m_metadata.otherFields) {
+        yaml += QStringLiteral("%1: %2\n").arg(pair.first, pair.second);
+    }
+    yaml += QStringLiteral("---\n\n");
+
+    return yaml + bodyText;
 }
 
 QString Backend::suggestedFileName(const QString &text) {
@@ -820,14 +990,7 @@ QString Backend::suggestedFileName(const QString &text) {
             name = name.remove(QRegularExpression(QStringLiteral("^#+\\s*"))).trimmed();
         }
     }
-    name.replace(QRegularExpression(QStringLiteral("[/\\x00-\\x1f\\x7f]")),
-                 QStringLiteral("-"));
-    name = name.left(120).trimmed();
-    if (name.isEmpty() || name == QStringLiteral(".") || name == QStringLiteral(".."))
-        name = QStringLiteral("Untitled");
-    if (!name.endsWith(QStringLiteral(".md"), Qt::CaseInsensitive))
-        name += QStringLiteral(".md");
-    return name;
+    return sanitizeFileName(name);
 }
 
 QString Backend::defaultAuthor() const {
@@ -845,23 +1008,16 @@ void Backend::setDefaultAuthor(const QString &author) {
 }
 
 QVariantMap Backend::documentMetadata() const {
-    const QString text = currentDocumentText();
-    const FrontmatterInfo info = parseFrontmatter(text);
     QVariantMap meta;
-    meta[QStringLiteral("hasFrontmatter")] = info.hasFrontmatter;
+    meta[QStringLiteral("hasFrontmatter")] = m_metadata.hasMetadata;
 
-    if (info.hasFrontmatter) {
-        meta[QStringLiteral("title")] = info.title;
-        meta[QStringLiteral("author")] = info.author.isEmpty() ? defaultAuthor() : info.author;
-        meta[QStringLiteral("topic")] = info.topic;
-        meta[QStringLiteral("created")] = info.created;
-        meta[QStringLiteral("updated")] = info.updated;
-    } else {
-        QString defaultTitle;
+    QString defaultTitle = m_metadata.title;
+    if (defaultTitle.isEmpty()) {
         if (m_fileUrl.isLocalFile()) {
             const QFileInfo fi(m_fileUrl.toLocalFile());
             defaultTitle = fi.completeBaseName();
         } else {
+            const QString text = currentDocumentText();
             QString firstLine = text.section(QLatin1Char('\n'), 0, 0).trimmed();
             if (firstLine.startsWith(QLatin1Char('#'))) {
                 defaultTitle = firstLine.remove(QRegularExpression(QStringLiteral("^#+\\s*"))).trimmed();
@@ -869,12 +1025,14 @@ QVariantMap Backend::documentMetadata() const {
                 defaultTitle = firstLine.left(60);
             }
         }
-        meta[QStringLiteral("title")] = defaultTitle;
-        meta[QStringLiteral("author")] = defaultAuthor();
-        meta[QStringLiteral("topic")] = QString();
+    }
+    meta[QStringLiteral("title")] = defaultTitle;
+    meta[QStringLiteral("author")] = m_metadata.author.isEmpty() ? defaultAuthor() : m_metadata.author;
+    meta[QStringLiteral("topic")] = m_metadata.topic;
 
-        QString createdTime;
-        QString updatedTime;
+    QString createdTime = m_metadata.created;
+    QString updatedTime = m_metadata.updated;
+    if (createdTime.isEmpty()) {
         if (m_fileUrl.isLocalFile() && QFileInfo::exists(m_fileUrl.toLocalFile())) {
             const QFileInfo fi(m_fileUrl.toLocalFile());
             QDateTime bTime = fi.birthTime();
@@ -886,60 +1044,29 @@ QVariantMap Backend::documentMetadata() const {
             createdTime = now;
             updatedTime = now;
         }
-        meta[QStringLiteral("created")] = createdTime;
-        meta[QStringLiteral("updated")] = updatedTime;
     }
+    meta[QStringLiteral("created")] = createdTime;
+    meta[QStringLiteral("updated")] = updatedTime;
 
     return meta;
 }
 
 void Backend::updateDocumentMetadata(const QString &title, const QString &author, const QString &topic) {
-    if (!m_document)
-        return;
-
     if (!author.isEmpty()) {
         setDefaultAuthor(author);
     }
-
-    const QString text = currentDocumentText();
-    const FrontmatterInfo info = parseFrontmatter(text);
     const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
 
-    const QString createdStr = (!info.created.isEmpty()) ? info.created : now;
-    const QString updatedStr = now;
-
-    QString newYaml = QStringLiteral("---\n");
-    if (!title.isEmpty())
-        newYaml += QStringLiteral("title: %1\n").arg(title);
-    if (!author.isEmpty())
-        newYaml += QStringLiteral("author: %1\n").arg(author);
-    if (!topic.isEmpty())
-        newYaml += QStringLiteral("topic: %1\n").arg(topic);
-    newYaml += QStringLiteral("created: %1\n").arg(createdStr);
-    newYaml += QStringLiteral("updated: %1\n").arg(updatedStr);
-
-    for (const auto &pair : info.otherFields) {
-        newYaml += QStringLiteral("%1: %2\n").arg(pair.first, pair.second);
+    m_metadata.hasMetadata = true;
+    m_metadata.title = title;
+    m_metadata.author = author.isEmpty() ? defaultAuthor() : author;
+    m_metadata.topic = topic;
+    if (m_metadata.created.isEmpty()) {
+        m_metadata.created = now;
     }
-    newYaml += QStringLiteral("---\n");
+    m_metadata.updated = now;
 
-    QTextCursor cursor(m_document);
-    cursor.beginEditBlock();
-    if (info.hasFrontmatter) {
-        cursor.setPosition(0);
-        cursor.setPosition(info.length, QTextCursor::KeepAnchor);
-        cursor.insertText(newYaml);
-    } else {
-        cursor.setPosition(0);
-        if (!text.isEmpty()) {
-            cursor.insertText(newYaml + QStringLiteral("\n"));
-        } else {
-            cursor.insertText(newYaml);
-        }
-    }
-    cursor.endEditBlock();
-
-    editorTextChanged();
+    updateModifiedState();
 }
 
 void Backend::setWordCount(int words) {
