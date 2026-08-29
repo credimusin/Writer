@@ -106,6 +106,17 @@ void MarkdownHighlighter::rebuildFormats() {
     m_codeFenceFormat.setForeground(marker);
     m_codeFenceFormat.setBackground(codeBackground);
 
+    m_frontmatterFenceFormat = QTextCharFormat();
+    m_frontmatterFenceFormat.setForeground(marker);
+
+    m_frontmatterKeyFormat = QTextCharFormat();
+    m_frontmatterKeyFormat.setForeground(m_darkMode ? QColor(QStringLiteral("#8ab4f8"))
+                                                    : QColor(QStringLiteral("#1a73e8")));
+    m_frontmatterKeyFormat.setFontWeight(QFont::Bold);
+
+    m_frontmatterValueFormat = QTextCharFormat();
+    m_frontmatterValueFormat.setForeground(text);
+
     m_quoteFormat = QTextCharFormat();
     m_quoteFormat.setForeground(quote);
     m_quoteFormat.setFontItalic(true);
@@ -120,6 +131,11 @@ void MarkdownHighlighter::rebuildFormats() {
     m_currentSearchFormat = QTextCharFormat();
     m_currentSearchFormat.setBackground(m_darkMode ? QColor(QStringLiteral("#b36b20"))
                                                    : QColor(QStringLiteral("#ffad42")));
+}
+
+bool MarkdownHighlighter::isRuleLine(const QString &text) {
+    static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}\\*(?:\\s*\\*){2,}\\s*$"));
+    return ruleRe.match(text).hasMatch();
 }
 
 bool MarkdownHighlighter::isFenceLine(const QString &text, QString *delimiter, QString *info) {
@@ -151,6 +167,35 @@ void MarkdownHighlighter::highlightBlock(const QString &text) {
     int prevState = previousBlockState();
     if (prevState < 0)
         prevState = StateNormal;
+
+    const int blockNum = currentBlock().blockNumber();
+
+    if (blockNum == 0 && text.trimmed() == QStringLiteral("---")) {
+        setCurrentBlockState(StateInFrontmatter);
+        setFormat(0, text.length(), m_frontmatterFenceFormat);
+        highlightSearch(text);
+        return;
+    }
+
+    if (prevState == StateInFrontmatter) {
+        if (text.trimmed() == QStringLiteral("---") || text.trimmed() == QStringLiteral("...")) {
+            setCurrentBlockState(StateNormal);
+            setFormat(0, text.length(), m_frontmatterFenceFormat);
+        } else {
+            setCurrentBlockState(StateInFrontmatter);
+            int colon = text.indexOf(QLatin1Char(':'));
+            if (colon > 0) {
+                setFormat(0, colon + 1, m_frontmatterKeyFormat);
+                if (colon + 1 < text.length()) {
+                    setFormat(colon + 1, text.length() - (colon + 1), m_frontmatterValueFormat);
+                }
+            } else {
+                setFormat(0, text.length(), m_frontmatterValueFormat);
+            }
+        }
+        highlightSearch(text);
+        return;
+    }
 
     if (prevState == StateInCodeBlock) {
         if (isClosingFence(text)) {
@@ -262,11 +307,8 @@ bool MarkdownHighlighter::highlightMarkers(const QString &text) {
             setFormat(0, list.capturedLength(1), m_markerFormat);
     }
 
-    if (firstChar == QLatin1Char('-') || firstChar == QLatin1Char('*')
-            || firstChar == QLatin1Char('_')) {
-        static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$"));
-        const QRegularExpressionMatch rule = ruleRe.match(text);
-        if (rule.hasMatch()) {
+    if (firstChar == QLatin1Char('*')) {
+        if (isRuleLine(text)) {
             setFormat(0, text.length(), m_ruleFormat);
             return true;
         }
@@ -304,6 +346,9 @@ void MarkdownHighlighter::highlightInline(const QString &text) {
 
 QList<MarkdownHighlighter::InlineMarkup> MarkdownHighlighter::inlineMarkup(const QString &text) {
     QList<InlineMarkup> markup;
+    if (isRuleLine(text)) {
+        return markup;
+    }
     if (!text.contains(QLatin1Char('*')) && !text.contains(QLatin1Char('_'))
             && !text.contains(QLatin1Char('['))) {
         return markup;

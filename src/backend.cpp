@@ -3,6 +3,7 @@
 #include <QClipboard>
 #include <QColor>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -36,6 +37,65 @@
 
 constexpr qreal typoraLineHeightPercent = 140;
 const QString lastSaveDirectorySetting = QStringLiteral("file/lastSaveDirectory");
+
+struct FrontmatterInfo {
+    bool hasFrontmatter = false;
+    int length = 0;
+    QString title;
+    QString author;
+    QString topic;
+    QString created;
+    QString updated;
+    QList<QPair<QString, QString>> otherFields;
+};
+
+static FrontmatterInfo parseFrontmatter(const QString &text) {
+    FrontmatterInfo info;
+    static const QRegularExpression frontmatterRe(
+        QStringLiteral(R"(^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$))")
+    );
+    const QRegularExpressionMatch match = frontmatterRe.match(text);
+    if (!match.hasMatch()) {
+        return info;
+    }
+
+    info.hasFrontmatter = true;
+    info.length = match.capturedLength(0);
+
+    const QString content = match.captured(1);
+    const QStringList lines = content.split(QLatin1Char('\n'));
+    for (const QString &rawLine : lines) {
+        const QString line = rawLine.trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+            continue;
+
+        const int colon = line.indexOf(QLatin1Char(':'));
+        if (colon < 0)
+            continue;
+
+        const QString key = line.left(colon).trimmed().toLower();
+        QString value = line.mid(colon + 1).trimmed();
+        if (value.size() >= 2 && ((value.startsWith(QLatin1Char('"')) && value.endsWith(QLatin1Char('"')))
+                               || (value.startsWith(QLatin1Char('\'')) && value.endsWith(QLatin1Char('\''))))) {
+            value = value.mid(1, value.size() - 2).trimmed();
+        }
+
+        if (key == QStringLiteral("title")) {
+            info.title = value;
+        } else if (key == QStringLiteral("author")) {
+            info.author = value;
+        } else if (key == QStringLiteral("topic") || key == QStringLiteral("theme") || key == QStringLiteral("subject") || key == QStringLiteral("tags") || key == QStringLiteral("tag")) {
+            info.topic = value;
+        } else if (key == QStringLiteral("created") || key == QStringLiteral("date") || key == QStringLiteral("creation_date")) {
+            info.created = value;
+        } else if (key == QStringLiteral("updated") || key == QStringLiteral("lastmod") || key == QStringLiteral("modified") || key == QStringLiteral("update_date")) {
+            info.updated = value;
+        } else {
+            info.otherFields.append({rawLine.left(rawLine.indexOf(QLatin1Char(':'))).trimmed(), value});
+        }
+    }
+    return info;
+}
 
 QString Backend::normalizedLinkUrl(const QString &clipboardText) {
     QString candidate = clipboardText.trimmed();
@@ -144,11 +204,11 @@ void Backend::setDarkMode(bool darkMode) {
     if (m_darkMode) {
         m_themeBackground = QStringLiteral("#fa101010"); // ~98% opacity
         m_themeForeground = QStringLiteral("#f5f1e8");
-        m_themeSelection = QStringLiteral("#2c4a6b");
+        m_themeSelection = m_themeAccent;
     } else {
         m_themeBackground = QStringLiteral("#f5ffffff"); // ~96% opacity
         m_themeForeground = QStringLiteral("#101010");
-        m_themeSelection = QStringLiteral("#b0c4de");
+        m_themeSelection = m_themeAccent;
     }
     
     if (m_highlighter) {
@@ -465,8 +525,11 @@ QVariantList Backend::hiddenRangesAt(int position) const {
         return ranges;
 
     if (block.userState() == MarkdownHighlighter::StateInCodeBlock
+            || block.userState() == MarkdownHighlighter::StateInFrontmatter
             || MarkdownHighlighter::isFenceLine(block.text())
-            || MarkdownHighlighter::isClosingFence(block.text())) {
+            || MarkdownHighlighter::isClosingFence(block.text())
+            || (block.blockNumber() == 0 && block.text().trimmed() == QStringLiteral("---"))
+            || MarkdownHighlighter::isRuleLine(block.text())) {
         return ranges;
     }
 
@@ -560,6 +623,25 @@ void Backend::saveTo(const QUrl &url) {
         m_closeAfterSave = false;
         setStatus(QStringLiteral("Only local files can be saved."));
         return;
+    }
+
+    const FrontmatterInfo info = parseFrontmatter(currentDocumentText());
+    if (info.hasFrontmatter && m_document) {
+        const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+        if (info.updated != now) {
+            QString fmText = currentDocumentText().left(info.length);
+            static const QRegularExpression updatedRe(
+                QStringLiteral(R"((updated|lastmod|modified):\s*[^\r\n]*)"),
+                QRegularExpression::CaseInsensitiveOption
+            );
+            if (updatedRe.match(fmText).hasMatch()) {
+                fmText.replace(updatedRe, QStringLiteral("updated: %1").arg(now));
+                QTextCursor cursor(m_document);
+                cursor.setPosition(0);
+                cursor.setPosition(info.length, QTextCursor::KeepAnchor);
+                cursor.insertText(fmText);
+            }
+        }
     }
 
     QString localPath = url.toLocalFile();
@@ -674,6 +756,27 @@ void Backend::watchCurrentFile() {
 
 
 
+QUrl Backend::suggestedFolder() const {
+    if (m_fileUrl.isLocalFile())
+        return QUrl::fromLocalFile(QFileInfo(m_fileUrl.toLocalFile()).absolutePath());
+
+    const QString savedDirectory = QSettings().value(lastSaveDirectorySetting).toString();
+    const QDir directory = savedDirectory.isEmpty() || !QDir(savedDirectory).exists()
+        ? QDir::home()
+        : QDir(savedDirectory);
+    return QUrl::fromLocalFile(directory.absolutePath());
+}
+
+QUrl Backend::suggestedPdfUrl() const {
+    if (m_fileUrl.isLocalFile()) {
+        const QFileInfo fi(m_fileUrl.toLocalFile());
+        return QUrl::fromLocalFile(fi.absoluteDir().filePath(fi.completeBaseName() + QStringLiteral(".pdf")));
+    }
+    const QUrl saveUrl = suggestedSaveUrl();
+    const QFileInfo fi(saveUrl.toLocalFile());
+    return QUrl::fromLocalFile(fi.absoluteDir().filePath(fi.completeBaseName() + QStringLiteral(".pdf")));
+}
+
 QUrl Backend::suggestedSaveUrl() const {
     if (m_fileUrl.isLocalFile())
         return m_fileUrl;
@@ -703,7 +806,20 @@ int Backend::countWords(const QString &text) {
 }
 
 QString Backend::suggestedFileName(const QString &text) {
-    QString name = text.section(QLatin1Char('\n'), 0, 0).trimmed();
+    const FrontmatterInfo info = parseFrontmatter(text);
+    QString name;
+    if (info.hasFrontmatter && !info.title.trimmed().isEmpty()) {
+        name = info.title.trimmed();
+    } else {
+        QString body = text;
+        if (info.hasFrontmatter && info.length <= body.length()) {
+            body = body.mid(info.length).trimmed();
+        }
+        name = body.section(QLatin1Char('\n'), 0, 0).trimmed();
+        if (name.startsWith(QLatin1Char('#'))) {
+            name = name.remove(QRegularExpression(QStringLiteral("^#+\\s*"))).trimmed();
+        }
+    }
     name.replace(QRegularExpression(QStringLiteral("[/\\x00-\\x1f\\x7f]")),
                  QStringLiteral("-"));
     name = name.left(120).trimmed();
@@ -712,6 +828,118 @@ QString Backend::suggestedFileName(const QString &text) {
     if (!name.endsWith(QStringLiteral(".md"), Qt::CaseInsensitive))
         name += QStringLiteral(".md");
     return name;
+}
+
+QString Backend::defaultAuthor() const {
+    const QString saved = QSettings().value(QStringLiteral("metadata/defaultAuthor")).toString();
+    if (!saved.isEmpty())
+        return saved;
+    const QString envUser = qEnvironmentVariable("USER");
+    if (!envUser.isEmpty())
+        return envUser;
+    return qEnvironmentVariable("USERNAME");
+}
+
+void Backend::setDefaultAuthor(const QString &author) {
+    QSettings().setValue(QStringLiteral("metadata/defaultAuthor"), author);
+}
+
+QVariantMap Backend::documentMetadata() const {
+    const QString text = currentDocumentText();
+    const FrontmatterInfo info = parseFrontmatter(text);
+    QVariantMap meta;
+    meta[QStringLiteral("hasFrontmatter")] = info.hasFrontmatter;
+
+    if (info.hasFrontmatter) {
+        meta[QStringLiteral("title")] = info.title;
+        meta[QStringLiteral("author")] = info.author.isEmpty() ? defaultAuthor() : info.author;
+        meta[QStringLiteral("topic")] = info.topic;
+        meta[QStringLiteral("created")] = info.created;
+        meta[QStringLiteral("updated")] = info.updated;
+    } else {
+        QString defaultTitle;
+        if (m_fileUrl.isLocalFile()) {
+            const QFileInfo fi(m_fileUrl.toLocalFile());
+            defaultTitle = fi.completeBaseName();
+        } else {
+            QString firstLine = text.section(QLatin1Char('\n'), 0, 0).trimmed();
+            if (firstLine.startsWith(QLatin1Char('#'))) {
+                defaultTitle = firstLine.remove(QRegularExpression(QStringLiteral("^#+\\s*"))).trimmed();
+            } else if (!firstLine.isEmpty()) {
+                defaultTitle = firstLine.left(60);
+            }
+        }
+        meta[QStringLiteral("title")] = defaultTitle;
+        meta[QStringLiteral("author")] = defaultAuthor();
+        meta[QStringLiteral("topic")] = QString();
+
+        QString createdTime;
+        QString updatedTime;
+        if (m_fileUrl.isLocalFile() && QFileInfo::exists(m_fileUrl.toLocalFile())) {
+            const QFileInfo fi(m_fileUrl.toLocalFile());
+            QDateTime bTime = fi.birthTime();
+            if (!bTime.isValid()) bTime = fi.lastModified();
+            createdTime = bTime.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+            updatedTime = fi.lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+        } else {
+            const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+            createdTime = now;
+            updatedTime = now;
+        }
+        meta[QStringLiteral("created")] = createdTime;
+        meta[QStringLiteral("updated")] = updatedTime;
+    }
+
+    return meta;
+}
+
+void Backend::updateDocumentMetadata(const QString &title, const QString &author, const QString &topic) {
+    if (!m_document)
+        return;
+
+    if (!author.isEmpty()) {
+        setDefaultAuthor(author);
+    }
+
+    const QString text = currentDocumentText();
+    const FrontmatterInfo info = parseFrontmatter(text);
+    const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+
+    const QString createdStr = (!info.created.isEmpty()) ? info.created : now;
+    const QString updatedStr = now;
+
+    QString newYaml = QStringLiteral("---\n");
+    if (!title.isEmpty())
+        newYaml += QStringLiteral("title: %1\n").arg(title);
+    if (!author.isEmpty())
+        newYaml += QStringLiteral("author: %1\n").arg(author);
+    if (!topic.isEmpty())
+        newYaml += QStringLiteral("topic: %1\n").arg(topic);
+    newYaml += QStringLiteral("created: %1\n").arg(createdStr);
+    newYaml += QStringLiteral("updated: %1\n").arg(updatedStr);
+
+    for (const auto &pair : info.otherFields) {
+        newYaml += QStringLiteral("%1: %2\n").arg(pair.first, pair.second);
+    }
+    newYaml += QStringLiteral("---\n");
+
+    QTextCursor cursor(m_document);
+    cursor.beginEditBlock();
+    if (info.hasFrontmatter) {
+        cursor.setPosition(0);
+        cursor.setPosition(info.length, QTextCursor::KeepAnchor);
+        cursor.insertText(newYaml);
+    } else {
+        cursor.setPosition(0);
+        if (!text.isEmpty()) {
+            cursor.insertText(newYaml + QStringLiteral("\n"));
+        } else {
+            cursor.insertText(newYaml);
+        }
+    }
+    cursor.endEditBlock();
+
+    editorTextChanged();
 }
 
 void Backend::setWordCount(int words) {
@@ -735,8 +963,10 @@ bool Backend::isInCodeBlock(int cursorPosition) const {
     QTextBlock block = m_document->findBlock(cursorPosition);
     if (!block.isValid()) return false;
     return (block.userState() == MarkdownHighlighter::StateInCodeBlock)
+        || (block.userState() == MarkdownHighlighter::StateInFrontmatter)
         || MarkdownHighlighter::isFenceLine(block.text())
-        || MarkdownHighlighter::isClosingFence(block.text());
+        || MarkdownHighlighter::isClosingFence(block.text())
+        || (block.blockNumber() == 0 && block.text().trimmed() == QStringLiteral("---"));
 }
 
 void Backend::applyDocumentTypography() {
@@ -746,8 +976,6 @@ void Backend::applyDocumentTypography() {
     QTextBlockFormat blockFormat;
     blockFormat.setLineHeight(typoraLineHeightPercent, QTextBlockFormat::ProportionalHeight);
 
-    // A full pass is only used for freshly loaded/attached documents, so it is
-    // safe to drop undo history here (re-enabling clears the stack anyway).
     const bool undoEnabled = m_document->isUndoRedoEnabled();
     m_document->setUndoRedoEnabled(false);
 
@@ -755,14 +983,16 @@ void Backend::applyDocumentTypography() {
     QTextCursor cursor(m_document);
     for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
         const QString text = block.text();
-        const bool inCodeBlock = (block.userState() == MarkdownHighlighter::StateInCodeBlock)
+        const bool inSpecial = (block.userState() == MarkdownHighlighter::StateInCodeBlock)
+            || (block.userState() == MarkdownHighlighter::StateInFrontmatter)
             || MarkdownHighlighter::isFenceLine(text)
-            || MarkdownHighlighter::isClosingFence(text);
+            || MarkdownHighlighter::isClosingFence(text)
+            || (block.blockNumber() == 0 && text.trimmed() == QStringLiteral("---"));
 
         QTextBlockFormat bf = blockFormat;
         static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
-        static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$"));
-        if (!inCodeBlock && (headingRe.match(text).hasMatch() || ruleRe.match(text).hasMatch())) {
+        static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}\\*(?:\\s*\\*){2,}\\s*$"));
+        if (!inSpecial && (headingRe.match(text).hasMatch() || ruleRe.match(text).hasMatch())) {
             bf.setAlignment(Qt::AlignHCenter);
             bf.clearBackground();
             bf.setTopMargin(0);
@@ -791,9 +1021,6 @@ void Backend::reapplyTypographyToChange() {
     QTextBlockFormat blockFormat;
     blockFormat.setLineHeight(typoraLineHeightPercent, QTextBlockFormat::ProportionalHeight);
 
-    // Format only the block(s) touched by the last edit instead of the whole
-    // document, and fold the change into the preceding edit command so a single
-    // undo reverts both the text and its formatting.
     const int maxPos = m_document->characterCount() - 1;
     const int start = qBound(0, m_lastChangePos, maxPos);
     const int end = qBound(start, m_lastChangePos + m_lastChangeAdded, maxPos);
@@ -807,14 +1034,16 @@ void Backend::reapplyTypographyToChange() {
     
     while (block.isValid() && block.position() <= endBlock.position()) {
         const QString text = block.text();
-        const bool inCodeBlock = (block.userState() == MarkdownHighlighter::StateInCodeBlock)
+        const bool inSpecial = (block.userState() == MarkdownHighlighter::StateInCodeBlock)
+            || (block.userState() == MarkdownHighlighter::StateInFrontmatter)
             || MarkdownHighlighter::isFenceLine(text)
-            || MarkdownHighlighter::isClosingFence(text);
+            || MarkdownHighlighter::isClosingFence(text)
+            || (block.blockNumber() == 0 && text.trimmed() == QStringLiteral("---"));
 
         QTextBlockFormat bf = blockFormat;
         static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
-        static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}([-*_])(?:\\s*\\1){2,}\\s*$"));
-        if (!inCodeBlock && (headingRe.match(text).hasMatch() || ruleRe.match(text).hasMatch())) {
+        static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}\\*(?:\\s*\\*){2,}\\s*$"));
+        if (!inSpecial && (headingRe.match(text).hasMatch() || ruleRe.match(text).hasMatch())) {
             bf.setAlignment(Qt::AlignHCenter);
             bf.clearBackground();
             bf.setTopMargin(0);

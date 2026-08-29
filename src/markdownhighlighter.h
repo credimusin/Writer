@@ -12,7 +12,8 @@ public:
 
     enum BlockState {
         StateNormal = 0,
-        StateInCodeBlock = 1
+        StateInCodeBlock = 1,
+        StateInFrontmatter = 2
     };
 
     void setDarkMode(bool darkMode);
@@ -37,9 +38,10 @@ public:
     // Backend::hiddenRangesAt) to skip the caret over the hidden markers.
     static QList<InlineMarkup> inlineMarkup(const QString &text);
 
-    // Helpers to check code fences
+    // Helpers to check code fences and rules
     static bool isFenceLine(const QString &text, QString *delimiter = nullptr, QString *info = nullptr);
     static bool isClosingFence(const QString &text, const QString &delimiter = QString());
+    static bool isRuleLine(const QString &text);
 
 protected:
     void highlightBlock(const QString &text) override;
@@ -64,6 +66,9 @@ private:
     QTextCharFormat m_codeFormat;
     QTextCharFormat m_codeBlockFormat;
     QTextCharFormat m_codeFenceFormat;
+    QTextCharFormat m_frontmatterFenceFormat;
+    QTextCharFormat m_frontmatterKeyFormat;
+    QTextCharFormat m_frontmatterValueFormat;
     QTextCharFormat m_quoteFormat;
     QTextCharFormat m_linkFormat;
     QString m_searchQuery;

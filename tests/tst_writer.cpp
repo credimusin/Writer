@@ -38,6 +38,10 @@ private slots:
     void suggestsSafeNames() {
         QCOMPARE(Backend::suggestedFileName(QStringLiteral("My first draft\nBody")),
                  QStringLiteral("My first draft.md"));
+        QCOMPARE(Backend::suggestedFileName(QStringLiteral("# Document Heading\nBody text")),
+                 QStringLiteral("Document Heading.md"));
+        QCOMPARE(Backend::suggestedFileName(QStringLiteral("---\ntitle: Article Title\nauthor: Me\n---\n# Some Heading")),
+                 QStringLiteral("Article Title.md"));
         QCOMPARE(Backend::suggestedFileName(QStringLiteral("A/B")), QStringLiteral("A-B.md"));
         QCOMPARE(Backend::suggestedFileName(QString()), QStringLiteral("Untitled.md"));
         QCOMPARE(Backend::suggestedFileName(QStringLiteral("Already.md")),
@@ -52,6 +56,81 @@ private slots:
         QCOMPARE(markup.at(0).content.length, 4);
         QCOMPARE(markup.at(2).content.length, 4);
         QCOMPARE(markup.at(2).markers[0].length, 1);
+    }
+
+    void handlesHorizontalRulesAsterisksOnly() {
+        QVERIFY(MarkdownHighlighter::isRuleLine(QStringLiteral("***")));
+        QVERIFY(MarkdownHighlighter::isRuleLine(QStringLiteral("****")));
+        QVERIFY(MarkdownHighlighter::isRuleLine(QStringLiteral("* * *")));
+        QVERIFY(MarkdownHighlighter::isRuleLine(QStringLiteral("   ***   ")));
+
+        // Dashes and underscores are no longer horizontal rules
+        QVERIFY(!MarkdownHighlighter::isRuleLine(QStringLiteral("---")));
+        QVERIFY(!MarkdownHighlighter::isRuleLine(QStringLiteral("___")));
+        QVERIFY(!MarkdownHighlighter::isRuleLine(QStringLiteral("**bold**")));
+        QVERIFY(!MarkdownHighlighter::isRuleLine(QStringLiteral("***bold italic***")));
+        QVERIFY(!MarkdownHighlighter::isRuleLine(QStringLiteral("* list item")));
+    }
+
+    void handlesFrontmatterInHighlighter() {
+        QTextDocument doc;
+        doc.setPlainText(QStringLiteral(
+            "---\n"
+            "title: My Post\n"
+            "author: Alice\n"
+            "topic: Testing\n"
+            "---\n"
+            "# Actual Heading\n"));
+        MarkdownHighlighter highlighter(&doc);
+
+        QTextBlock b0 = doc.findBlockByNumber(0);
+        QTextBlock b1 = doc.findBlockByNumber(1);
+        QTextBlock b2 = doc.findBlockByNumber(2);
+        QTextBlock b3 = doc.findBlockByNumber(3);
+        QTextBlock b4 = doc.findBlockByNumber(4);
+        QTextBlock b5 = doc.findBlockByNumber(5);
+
+        QCOMPARE(b0.userState(), int(MarkdownHighlighter::StateInFrontmatter));
+        QCOMPARE(b1.userState(), int(MarkdownHighlighter::StateInFrontmatter));
+        QCOMPARE(b2.userState(), int(MarkdownHighlighter::StateInFrontmatter));
+        QCOMPARE(b3.userState(), int(MarkdownHighlighter::StateInFrontmatter));
+        QCOMPARE(b4.userState(), int(MarkdownHighlighter::StateNormal));
+        QCOMPARE(b5.userState(), int(MarkdownHighlighter::StateNormal));
+    }
+
+    void parsesAndUpdatesMetadata() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        Backend backend;
+        QQmlEngine engine;
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+
+        editor->setProperty("text", QStringLiteral("# My Story\nHello world"));
+        QVariantMap meta = backend.documentMetadata();
+        QCOMPARE(meta.value("title").toString(), QStringLiteral("My Story"));
+        QVERIFY(!meta.value("created").toString().isEmpty());
+
+        backend.updateDocumentMetadata(QStringLiteral("New Title"), QStringLiteral("Author X"), QStringLiteral("Fiction"));
+        QVariantMap updatedMeta = backend.documentMetadata();
+        QCOMPARE(updatedMeta.value("title").toString(), QStringLiteral("New Title"));
+        QCOMPARE(updatedMeta.value("author").toString(), QStringLiteral("Author X"));
+        QCOMPARE(updatedMeta.value("topic").toString(), QStringLiteral("Fiction"));
+        QCOMPARE(backend.defaultAuthor(), QStringLiteral("Author X"));
+
+        QString text = editor->property("text").toString();
+        QVERIFY(text.startsWith(QStringLiteral("---\n")));
+        QVERIFY(text.contains(QStringLiteral("title: New Title")));
+        QVERIFY(text.contains(QStringLiteral("author: Author X")));
+        QVERIFY(text.contains(QStringLiteral("topic: Fiction")));
+        QVERIFY(text.contains(QStringLiteral("Hello world")));
     }
 
     void ignoresFormattingInsideInlineCode() {

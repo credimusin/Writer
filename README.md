@@ -30,6 +30,7 @@ To install Writer system-wide (requires sudo privileges):
 - `Ctrl+S` saves the document.
 - `Ctrl+Shift+S` saves as.
 - `Ctrl+O` opens a Markdown file.
+- `Ctrl+M` opens document properties / metadata dialog (title, author, topic).
 - `Ctrl+P` exports the document to a WYSIWYG PDF (preserves editor layout and formatting).
 - `Ctrl+N` opens a new Writer window.
 - `Ctrl+Z`, `Ctrl+Shift+Z`, and `Ctrl+Y` handle undo and redo.
@@ -40,6 +41,9 @@ To install Writer system-wide (requires sudo privileges):
 - `Ctrl+Shift+H` clears the heading format.
 - `Ctrl+T` switch the visual theme.
 - `Ctrl+?` shows the keyboard shortcut reference.
+
+### Document Properties (YAML Frontmatter)
+Writer supports YAML frontmatter at the beginning of files for document metadata (`title`, `author`, `topic`, `created`, `updated`). Press `Ctrl+M` to open the properties dialog to view and edit metadata. The author is saved in settings across documents, and the document title is automatically suggested as the file name when saving.
 
 ### Markdown Syntax Hiding
 Writer automatically hides markdown syntax characters (like asterisks, underscores, and link brackets) for a cleaner reading and writing experience. They seamlessly reappear when their inner content becomes empty, or you can manage formatting entirely through shortcuts.
@@ -56,3 +60,7 @@ Writer at the size it is designed around; larger and smaller sizes scale from th
 - Qt 6: `qt6-base`, `qt6-declarative`, `qt6-quickcontrols2`
 - `xdg-desktop-portal` and a portal backend
 
+
+---
+
+Works for me on Fedora Sway Atomic.

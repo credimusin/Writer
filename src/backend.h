@@ -64,6 +64,8 @@ public:
     Q_INVOKABLE void reloadFromDisk();
     Q_INVOKABLE void keepExternalVersion();
     Q_INVOKABLE void exportPdf(const QUrl &url);
+    Q_INVOKABLE QUrl suggestedPdfUrl() const;
+    Q_INVOKABLE QUrl suggestedFolder() const;
     Q_INVOKABLE void newWindow();
     Q_INVOKABLE QString clipboardUrl() const;
     Q_INVOKABLE QString clipboardText() const;
@@ -72,6 +74,10 @@ public:
     Q_INVOKABLE bool isInCodeBlock(int cursorPosition) const;
     Q_INVOKABLE void setSearchHighlight(const QString &query, int currentMatchStart);
     Q_INVOKABLE void openExternalUrl(const QUrl &url);
+    Q_INVOKABLE QVariantMap documentMetadata() const;
+    Q_INVOKABLE void updateDocumentMetadata(const QString &title, const QString &author, const QString &topic);
+    Q_INVOKABLE QString defaultAuthor() const;
+    Q_INVOKABLE void setDefaultAuthor(const QString &author);
 
 signals:
     void saveAsRequested();

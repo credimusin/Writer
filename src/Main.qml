@@ -63,6 +63,34 @@ ApplicationWindow {
         unsavedChangesDialog.open();
     }
 
+    function openFilePrompt() {
+        if (backend.modified) {
+            win.pendingAction = "openDialog";
+            unsavedChangesDialog.open();
+        } else {
+            openDialog.currentFolder = backend.suggestedFolder();
+            openDialog.open();
+        }
+    }
+
+    function saveFilePrompt() {
+        saveDialog.currentFolder = backend.suggestedFolder();
+        saveDialog.currentFile = backend.suggestedSaveUrl();
+        saveDialog.open();
+    }
+
+    function exportPdfPrompt() {
+        exportPdfDialog.currentFolder = backend.suggestedFolder();
+        exportPdfDialog.currentFile = backend.suggestedPdfUrl();
+        exportPdfDialog.open();
+    }
+
+    function openMetadataPrompt() {
+        var meta = backend.documentMetadata();
+        metadataDialog.loadMetadata(meta);
+        metadataDialog.open();
+    }
+
     function completePendingAction() {
         var action = pendingAction;
         pendingAction = "";
@@ -72,6 +100,7 @@ ApplicationWindow {
         } else if (action === "open") {
             backend.open(pendingOpenUrl);
         } else if (action === "openDialog") {
+            openDialog.currentFolder = backend.suggestedFolder();
             openDialog.open();
         }
     }
@@ -200,14 +229,7 @@ ApplicationWindow {
     Shortcut {
         sequences: [StandardKey.Open]
         context: Qt.ApplicationShortcut
-        onActivated: {
-            if (backend.modified) {
-                win.pendingAction = "openDialog";
-                unsavedChangesDialog.open();
-            } else {
-                openDialog.open();
-            }
-        }
+        onActivated: win.openFilePrompt()
     }
 
     Shortcut {
@@ -219,10 +241,7 @@ ApplicationWindow {
     Shortcut {
         sequences: [StandardKey.SaveAs]
         context: Qt.ApplicationShortcut
-        onActivated: {
-            saveDialog.currentFile = backend.suggestedSaveUrl();
-            saveDialog.open();
-        }
+        onActivated: win.saveFilePrompt()
     }
 
     Shortcut {
@@ -236,9 +255,13 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+P"
         context: Qt.ApplicationShortcut
-        onActivated: {
-            exportPdfDialog.open();
-        }
+        onActivated: win.exportPdfPrompt()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+M"
+        context: Qt.ApplicationShortcut
+        onActivated: win.openMetadataPrompt()
     }
 
     Shortcut {
@@ -336,14 +359,15 @@ ApplicationWindow {
     Connections {
         target: backend
         function onSaveAsRequested() {
-            saveDialog.currentFile = backend.suggestedSaveUrl();
-            saveDialog.open();
+            win.saveFilePrompt();
         }
     }
 
     FileDialog {
         id: openDialog
         objectName: "openDialog"
+        parentWindow: win
+        popupType: Popup.Item
         title: "Open File"
         nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
         onAccepted: {
@@ -355,6 +379,8 @@ ApplicationWindow {
     FileDialog {
         id: saveDialog
         objectName: "saveDialog"
+        parentWindow: win
+        popupType: Popup.Item
         title: "Save File"
         fileMode: FileDialog.SaveFile
         nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
@@ -371,12 +397,31 @@ ApplicationWindow {
 
     FileDialog {
         id: exportPdfDialog
+        parentWindow: win
+        popupType: Popup.Item
         title: "Export PDF"
         fileMode: FileDialog.SaveFile
         nameFilters: ["PDF files (*.pdf)", "All files (*)"]
         onAccepted: {
             if (selectedFile !== "")
                 backend.exportPdf(selectedFile);
+        }
+    }
+
+    MetadataDialog {
+        id: metadataDialog
+        darkMode: win.darkMode
+        textScale: win.textScale
+        textColor: win.textColor
+        strongTextColor: win.strongTextColor
+        mutedColor: win.mutedColor
+        accentColor: backend.themeAccent
+        selectionFill: win.selectionFill
+        containerWidth: win.width
+        containerHeight: win.height
+
+        onMetadataAccepted: function(title, author, topic) {
+            backend.updateDocumentMetadata(title, author, topic);
         }
     }
 
@@ -413,7 +458,7 @@ ApplicationWindow {
                 }
 
                 Label {
-                    text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+P          Export PDF\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nCtrl+H          Cycle Heading\nCtrl+Shift+H    Clear Heading\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
+                    text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+M          Properties\nCtrl+P          Export PDF\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nCtrl+H          Cycle Heading\nCtrl+Shift+H    Clear Heading\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
                     lineHeight: 1.5
                     color: win.textColor
                     font.family: "monospace"
@@ -841,14 +886,7 @@ ApplicationWindow {
                 iconName: "open"
                 iconColor: win.mutedColor
                 tooltip: "Open"
-                onClicked: {
-                    if (backend.modified) {
-                        win.pendingAction = "openDialog";
-                        unsavedChangesDialog.open();
-                    } else {
-                        openDialog.open();
-                    }
-                }
+                onClicked: win.openFilePrompt()
             }
             Label {
                 text: backend.status
