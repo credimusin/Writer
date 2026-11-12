@@ -1,32 +1,30 @@
 #include "backend.h"
 
 #include <QClipboard>
-#include <QColor>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileDialog>
 #include <QFileInfo>
-#include <QDesktopServices>
+#include <QFontDatabase>
 #include <QGuiApplication>
-#include <QMimeData>
-#include <QProcess>
-#include <QPrinter>
-#include <QQuickTextDocument>
-#include <QRegularExpression>
-#include <QSettings>
-#include <QStandardPaths>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QJsonArray>
-#include <QFileDialog>
 #include <QLockFile>
+#include <QMimeData>
+#include <QPrinter>
+#include <QProcess>
+#include <QQuickTextDocument>
+#include <QRegularExpression>
 #include <QSaveFile>
+#include <QSettings>
+#include <QStandardPaths>
 #include <QTextBlock>
 #include <QTextBlockFormat>
 #include <QTextCursor>
 #include <QTextDocument>
-#include <QTextStream>
 #include <QUrl>
 #include <QVariantMap>
 
@@ -34,8 +32,12 @@
 
 #include "markdownhighlighter.h"
 
+namespace {
+
 constexpr qreal typoraLineHeightPercent = 140;
 const QString lastSaveDirectorySetting = QStringLiteral("file/lastSaveDirectory");
+const QString defaultAuthorSetting = QStringLiteral("metadata/defaultAuthor");
+const QString markdownFileFilter = QStringLiteral("Markdown files (*.md *.markdown);;All files (*)");
 
 struct FrontmatterInfo {
     bool hasFrontmatter = false;
@@ -45,58 +47,114 @@ struct FrontmatterInfo {
     QString topic;
     QString created;
     QString updated;
-    QList<QPair<QString, QString>> otherFields;
+    QStringList otherLines;
 };
 
-static FrontmatterInfo parseFrontmatter(const QString &text) {
+QString timestamp(const QDateTime &time) {
+    return time.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
+}
+
+QString fileCreationTimestamp(const QFileInfo &file) {
+    const QDateTime birth = file.birthTime();
+    return timestamp(birth.isValid() ? birth : file.lastModified());
+}
+
+QString unquoteYaml(const QString &value) {
+    if (value.size() < 2 || value.front() != value.back())
+        return value;
+
+    const QString inner = value.mid(1, value.size() - 2);
+    if (value.front() == QLatin1Char('\''))
+        return QString(inner).replace(QStringLiteral("''"), QStringLiteral("'"));
+    if (value.front() != QLatin1Char('"'))
+        return value;
+
+    QString result;
+    for (int i = 0; i < inner.size(); ++i) {
+        const bool escapedQuoteOrSlash = inner.at(i) == QLatin1Char('\\') && i + 1 < inner.size()
+            && (inner.at(i + 1) == QLatin1Char('"') || inner.at(i + 1) == QLatin1Char('\\'));
+        if (escapedQuoteOrSlash)
+            ++i;
+        result += inner.at(i);
+    }
+    return result;
+}
+
+QString yamlScalar(const QString &value) {
+    static const QString indicators = QStringLiteral("-?:,[]{}#&*!|>'\"%@`");
+    const bool plain = value == value.trimmed()
+        && !indicators.contains(value.front())
+        && !value.contains(QLatin1String(": "))
+        && !value.contains(QLatin1String(" #"))
+        && !value.endsWith(QLatin1Char(':'));
+    if (plain)
+        return value;
+
+    QString escaped = value;
+    escaped.replace(QLatin1Char('\\'), QStringLiteral("\\\\"))
+           .replace(QLatin1Char('"'), QStringLiteral("\\\""));
+    return QLatin1Char('"') + escaped + QLatin1Char('"');
+}
+
+FrontmatterInfo parseFrontmatter(const QString &text) {
     FrontmatterInfo info;
     static const QRegularExpression frontmatterRe(
-        QStringLiteral(R"(^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$))")
-    );
+        QStringLiteral(R"(^---\r?\n([\s\S]*?)\r?\n(?:---|\.\.\.)(?:\r?\n|$))"));
     const QRegularExpressionMatch match = frontmatterRe.match(text);
-    if (!match.hasMatch()) {
+    if (!match.hasMatch())
         return info;
-    }
 
     info.hasFrontmatter = true;
     info.length = match.capturedLength(0);
 
-    const QString content = match.captured(1);
-    const QStringList lines = content.split(QLatin1Char('\n'));
-    for (const QString &rawLine : lines) {
-        const QString line = rawLine.trimmed();
-        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
-            continue;
+    static const QRegularExpression fieldRe(
+        QStringLiteral(R"(^(title|author|topic|created|updated):[ \t]+([^\s|>\[{&*!#].*?)\s*$)"));
+    const QStringList lines = match.captured(1).split(QLatin1Char('\n'));
+    for (QString line : lines) {
+        if (line.endsWith(QLatin1Char('\r')))
+            line.chop(1);
 
-        const int colon = line.indexOf(QLatin1Char(':'));
-        if (colon < 0)
+        const QRegularExpressionMatch field = fieldRe.match(line);
+        if (!field.hasMatch()) {
+            info.otherLines.append(line);
             continue;
-
-        const QString key = line.left(colon).trimmed().toLower();
-        QString value = line.mid(colon + 1).trimmed();
-        if (value.size() >= 2 && ((value.startsWith(QLatin1Char('"')) && value.endsWith(QLatin1Char('"')))
-                               || (value.startsWith(QLatin1Char('\'')) && value.endsWith(QLatin1Char('\''))))) {
-            value = value.mid(1, value.size() - 2).trimmed();
         }
 
-        if (key == QStringLiteral("title")) {
+        const QString key = field.captured(1);
+        const QString value = unquoteYaml(field.captured(2));
+        if (key == QLatin1String("title"))
             info.title = value;
-        } else if (key == QStringLiteral("author")) {
+        else if (key == QLatin1String("author"))
             info.author = value;
-        } else if (key == QStringLiteral("topic") || key == QStringLiteral("theme") || key == QStringLiteral("subject") || key == QStringLiteral("tags") || key == QStringLiteral("tag")) {
+        else if (key == QLatin1String("topic"))
             info.topic = value;
-        } else if (key == QStringLiteral("created") || key == QStringLiteral("date") || key == QStringLiteral("creation_date")) {
+        else if (key == QLatin1String("created"))
             info.created = value;
-        } else if (key == QStringLiteral("updated") || key == QStringLiteral("lastmod") || key == QStringLiteral("modified") || key == QStringLiteral("update_date")) {
+        else
             info.updated = value;
-        } else {
-            info.otherFields.append({rawLine.left(rawLine.indexOf(QLatin1Char(':'))).trimmed(), value});
-        }
     }
     return info;
 }
 
-static QString sanitizeFileName(QString name) {
+QString documentBody(const QString &fullText, const FrontmatterInfo &info) {
+    if (!info.hasFrontmatter)
+        return fullText;
+
+    const QString body = fullText.mid(info.length);
+    if (body.startsWith(QLatin1String("\r\n")))
+        return body.mid(2);
+    if (body.startsWith(QLatin1Char('\n')))
+        return body.mid(1);
+    return body;
+}
+
+QString firstLineTitle(const QString &text) {
+    static const QRegularExpression headingMarkerRe(QStringLiteral("^#+\\s*"));
+    QString line = text.trimmed().section(QLatin1Char('\n'), 0, 0).trimmed();
+    return line.remove(headingMarkerRe).left(100);
+}
+
+QString sanitizeFileName(QString name) {
     name.replace(QRegularExpression(QStringLiteral("[/\\x00-\\x1f\\x7f]")),
                  QStringLiteral("-"));
     name = name.left(120).trimmed();
@@ -105,6 +163,41 @@ static QString sanitizeFileName(QString name) {
     if (!name.endsWith(QStringLiteral(".md"), Qt::CaseInsensitive))
         name += QStringLiteral(".md");
     return name;
+}
+
+QRegularExpressionMatch matchHeading(const QString &text) {
+    static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
+    return headingRe.match(text);
+}
+
+bool isVerbatimBlock(const QTextBlock &block) {
+    const int state = block.userState();
+    return state == MarkdownHighlighter::StateInCodeBlock
+        || state == MarkdownHighlighter::StateInFrontmatter
+        || MarkdownHighlighter::isFenceLine(block.text())
+        || (block.blockNumber() == 0 && block.text().trimmed() == QLatin1String("---"));
+}
+
+void applyBlockTypography(QTextCursor &cursor, const QTextBlock &block) {
+    const bool centered = !isVerbatimBlock(block)
+        && (matchHeading(block.text()).hasMatch() || MarkdownHighlighter::isRuleLine(block.text()));
+
+    QTextBlockFormat format;
+    format.setLineHeight(typoraLineHeightPercent, QTextBlockFormat::ProportionalHeight);
+    format.setAlignment(centered ? Qt::AlignHCenter : Qt::AlignLeft);
+    format.setTopMargin(0);
+    format.setBottomMargin(0);
+
+    cursor.setPosition(block.position());
+    cursor.mergeBlockFormat(format);
+}
+
+void unwatchAll(QFileSystemWatcher &watcher) {
+    const QStringList watched = watcher.files();
+    if (!watched.isEmpty())
+        watcher.removePaths(watched);
+}
+
 }
 
 QString Backend::normalizedLinkUrl(const QString &clipboardText) {
@@ -202,22 +295,14 @@ void Backend::setDarkMode(bool darkMode) {
         return;
 
     m_darkMode = darkMode;
-    
-    if (m_darkMode) {
-        m_themeBackground = QStringLiteral("#fa101010"); // ~98% opacity
-        m_themeForeground = QStringLiteral("#f5f1e8");
-        m_themeSelection = m_themeAccent;
-    } else {
-        m_themeBackground = QStringLiteral("#f5ffffff"); // ~96% opacity
-        m_themeForeground = QStringLiteral("#101010");
-        m_themeSelection = m_themeAccent;
-    }
-    
+    m_themeBackground = darkMode ? QStringLiteral("#fa101010") : QStringLiteral("#f5ffffff");
+    m_themeForeground = darkMode ? QStringLiteral("#f5f1e8") : QStringLiteral("#101010");
+
     if (m_highlighter) {
         m_highlighter->setDarkMode(m_darkMode);
         m_highlighter->setColors(m_themeBackground, m_themeForeground, m_themeAccent);
     }
-    
+
     emit themeColorsChanged();
     emit darkModeChanged();
 }
@@ -257,24 +342,16 @@ void Backend::attachDocument(QObject *textDocument) {
     applyDocumentTypography();
     restoreRecovery();
 
-    if (!m_fileUrl.isValid() && !m_metadata.hasMetadata) {
+    if (!m_fileUrl.isValid() && !m_metadata.hasMetadata)
         initNewDocumentMetadata();
-    }
 }
 
 void Backend::openDialog() {
-    emit openDialogRequested();
-    if (QGuiApplication::platformName() == QLatin1String("offscreen"))
-        return;
-
-    const QString fileName = QFileDialog::getOpenFileName(
-        nullptr,
-        QStringLiteral("Open File"),
-        suggestedFolder().toLocalFile(),
-        QStringLiteral("Markdown files (*.md *.markdown);;All files (*)")
-    );
-    if (!fileName.isEmpty())
-        open(QUrl::fromLocalFile(fileName));
+    const QString path = QFileDialog::getOpenFileName(
+        nullptr, QStringLiteral("Open File"),
+        QFileInfo(suggestedSavePath()).absolutePath(), markdownFileFilter);
+    if (!path.isEmpty())
+        open(QUrl::fromLocalFile(path));
 }
 
 void Backend::open(const QUrl &url) {
@@ -283,10 +360,10 @@ void Backend::open(const QUrl &url) {
         return;
     }
 
-    const QString targetName = QFileInfo(url.toLocalFile()).fileName();
-    QFile file(url.toLocalFile());
+    const QFileInfo fileInfo(url.toLocalFile());
+    QFile file(fileInfo.filePath());
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        setStatus(QStringLiteral("Could not open %1.").arg(targetName));
+        setStatus(QStringLiteral("Could not open %1.").arg(fileInfo.fileName()));
         return;
     }
 
@@ -294,35 +371,14 @@ void Backend::open(const QUrl &url) {
     const QString fullText = QString::fromUtf8(contents);
     const FrontmatterInfo info = parseFrontmatter(fullText);
 
-    if (info.hasFrontmatter) {
-        m_metadata.hasMetadata = true;
-        m_metadata.title = info.title;
-        m_metadata.author = info.author.isEmpty() ? defaultAuthor() : info.author;
-        m_metadata.topic = info.topic;
-        m_metadata.created = info.created;
-        m_metadata.updated = info.updated;
-        m_metadata.otherFields = info.otherFields;
-
-        QString body = fullText.mid(info.length);
-        if (body.startsWith(QLatin1String("\r\n")))
-            body = body.mid(2);
-        else if (body.startsWith(QLatin1Char('\n')))
-            body = body.mid(1);
-        loadDocumentText(body);
-    } else {
-        m_metadata.hasMetadata = false;
-        m_metadata.title.clear();
-        m_metadata.author = defaultAuthor();
-        m_metadata.topic.clear();
-        const QFileInfo fi(url.toLocalFile());
-        QDateTime bTime = fi.birthTime();
-        if (!bTime.isValid()) bTime = fi.lastModified();
-        m_metadata.created = bTime.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
-        m_metadata.updated = fi.lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
-        m_metadata.otherFields.clear();
-
-        loadDocumentText(fullText);
-    }
+    m_metadata.hasMetadata = info.hasFrontmatter;
+    m_metadata.title = info.title;
+    m_metadata.author = info.author.isEmpty() ? defaultAuthor() : info.author;
+    m_metadata.topic = info.topic;
+    m_metadata.created = info.created.isEmpty() ? fileCreationTimestamp(fileInfo) : info.created;
+    m_metadata.updated = info.updated.isEmpty() ? timestamp(fileInfo.lastModified()) : info.updated;
+    m_metadata.otherLines = info.otherLines;
+    loadDocumentText(documentBody(fullText, info));
 
     clearRecovery();
     m_lastKnownFileContents = contents;
@@ -339,44 +395,18 @@ void Backend::save() {
         return;
     }
 
-    saveTo(m_fileUrl);
-}
-
-void Backend::saveForClose() {
-    if (!m_modified) {
-        emit closeAfterSave();
-        return;
-    }
-
-    m_closeAfterSave = true;
-    save();
+    saveAs(m_fileUrl);
 }
 
 void Backend::saveAsDialog() {
-    emit saveAsRequested();
-    if (QGuiApplication::platformName() == QLatin1String("offscreen"))
+    const QString path = QFileDialog::getSaveFileName(
+        nullptr, QStringLiteral("Save File"), suggestedSavePath(), markdownFileFilter);
+    if (path.isEmpty()) {
+        emit saveFinished(false);
         return;
-
-    const QString fileName = QFileDialog::getSaveFileName(
-        nullptr,
-        QStringLiteral("Save File"),
-        suggestedSaveUrl().toLocalFile(),
-        QStringLiteral("Markdown files (*.md *.markdown);;All files (*)")
-    );
-    if (!fileName.isEmpty()) {
-        saveAs(QUrl::fromLocalFile(fileName));
-    } else {
-        fileDialogCanceled();
     }
-}
 
-void Backend::saveAs(const QUrl &url) {
-    saveTo(url);
-}
-
-void Backend::fileDialogCanceled() {
-    m_closeAfterSave = false;
-    emit saveCanceled();
+    saveAs(QUrl::fromLocalFile(path));
 }
 
 void Backend::discardRecovery() {
@@ -404,25 +434,16 @@ void Backend::keepExternalVersion() {
 }
 
 void Backend::exportPdfDialog() {
-    if (QGuiApplication::platformName() == QLatin1String("offscreen"))
-        return;
-
-    const QString fileName = QFileDialog::getSaveFileName(
-        nullptr,
-        QStringLiteral("Export PDF"),
-        suggestedPdfUrl().toLocalFile(),
-        QStringLiteral("PDF files (*.pdf);;All files (*)")
-    );
-    if (!fileName.isEmpty())
-        exportPdf(QUrl::fromLocalFile(fileName));
+    const QFileInfo source(suggestedSavePath());
+    const QString path = QFileDialog::getSaveFileName(
+        nullptr, QStringLiteral("Export PDF"),
+        source.absoluteDir().filePath(source.completeBaseName() + QStringLiteral(".pdf")),
+        QStringLiteral("PDF files (*.pdf);;All files (*)"));
+    if (!path.isEmpty())
+        exportPdf(path);
 }
 
-void Backend::exportPdf(const QUrl &url) {
-    if (!url.isLocalFile()) {
-        setStatus(QStringLiteral("Only local files can be saved as PDF."));
-        return;
-    }
-    
+void Backend::exportPdf(const QString &path) {
     if (!m_document) {
         setStatus(QStringLiteral("There is no document to export."));
         return;
@@ -430,7 +451,7 @@ void Backend::exportPdf(const QUrl &url) {
 
     QPrinter printer(QPrinter::HighResolution);
     printer.setOutputFormat(QPrinter::PdfFormat);
-    printer.setOutputFileName(url.toLocalFile());
+    printer.setOutputFileName(path);
 
     // Clone to preserve the editor's exact layout (alignment, line heights, explicit empty lines)
     std::unique_ptr<QTextDocument> rendered(m_document->clone());
@@ -449,26 +470,22 @@ void Backend::exportPdf(const QUrl &url) {
     charFormat.setForeground(Qt::black);
     cursor.mergeCharFormat(charFormat);
 
-    for (QTextBlock block = rendered->begin(); block.isValid(); block = block.next()) {
-        QString text = block.text();
-        
-        const bool inCodeBlock = (block.userState() == MarkdownHighlighter::StateInCodeBlock)
-            || MarkdownHighlighter::isFenceLine(text)
-            || MarkdownHighlighter::isClosingFence(text);
+    QTextCharFormat codeFormat;
+    codeFormat.setFontFamilies({QFontDatabase::systemFont(QFontDatabase::FixedFont).family()});
 
-        if (inCodeBlock) {
-            QTextCharFormat codeFmt;
-            codeFmt.setFontFamilies({QStringLiteral("monospace")});
+    for (QTextBlock block = rendered->begin(); block.isValid(); block = block.next()) {
+        const QString text = block.text();
+
+        if (isVerbatimBlock(block)) {
             cursor.setPosition(block.position());
             cursor.setPosition(block.position() + text.length(), QTextCursor::KeepAnchor);
-            cursor.mergeCharFormat(codeFmt);
+            cursor.mergeCharFormat(codeFormat);
             continue;
         }
 
         QList<QPair<int, int>> toDelete;
 
-        static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
-        QRegularExpressionMatch heading = headingRe.match(text);
+        const QRegularExpressionMatch heading = matchHeading(text);
         if (heading.hasMatch()) {
             int level = heading.capturedLength(1);
             qreal scale = 1.0 + (6.0 - level) * 0.2;
@@ -485,7 +502,7 @@ void Backend::exportPdf(const QUrl &url) {
             toDelete.append({heading.capturedStart(1), heading.capturedLength(1) + heading.capturedLength(2)});
         }
 
-        QList<MarkdownHighlighter::InlineMarkup> markup = MarkdownHighlighter::inlineMarkup(text);
+        const QList<MarkdownHighlighter::InlineMarkup> markup = MarkdownHighlighter::inlineMarkup(text);
         for (const auto &item : markup) {
             QTextCharFormat contentFmt;
             if (item.kind == MarkdownHighlighter::InlineKind::Bold || item.kind == MarkdownHighlighter::InlineKind::BoldItalic)
@@ -515,7 +532,7 @@ void Backend::exportPdf(const QUrl &url) {
     }
 
     rendered->print(&printer);
-    
+
     setStatus(QStringLiteral("Exported to PDF"));
 }
 
@@ -560,44 +577,26 @@ QString Backend::clipboardText() const {
 }
 
 void Backend::updateModifiedState() {
-    const QString text = currentDocumentText();
+    QString text = currentDocumentText();
     bool isModified = true;
 
     if (m_hasKnownFileContents) {
         const QString fullText = QString::fromUtf8(m_lastKnownFileContents);
         const FrontmatterInfo info = parseFrontmatter(fullText);
-        QString diskBody = info.hasFrontmatter ? fullText.mid(info.length) : fullText;
-        if (diskBody.startsWith(QLatin1String("\r\n")))
-            diskBody = diskBody.mid(2);
-        else if (diskBody.startsWith(QLatin1Char('\n')))
-            diskBody = diskBody.mid(1);
+        QString diskBody = documentBody(fullText, info);
         diskBody.remove(QLatin1Char('\r'));
+        text.remove(QLatin1Char('\r'));
 
-        QString currentNormalized = text;
-        currentNormalized.remove(QLatin1Char('\r'));
-
-        const bool textMatches = (currentNormalized == diskBody);
-        bool metaMatches = true;
-        if (info.hasFrontmatter != m_metadata.hasMetadata) {
-            metaMatches = false;
-        } else if (m_metadata.hasMetadata) {
-            if (info.title != m_metadata.title
-                    || (info.author.isEmpty() ? defaultAuthor() : info.author) != m_metadata.author
-                    || info.topic != m_metadata.topic
-                    || info.otherFields != m_metadata.otherFields) {
-                metaMatches = false;
-            }
-        }
-
-        if (textMatches && metaMatches) {
-            isModified = false;
-        }
+        const bool metaMatches = info.hasFrontmatter == m_metadata.hasMetadata
+            && (!m_metadata.hasMetadata
+                || (info.title == m_metadata.title
+                    && (info.author.isEmpty() ? defaultAuthor() : info.author) == m_metadata.author
+                    && info.topic == m_metadata.topic
+                    && info.otherLines == m_metadata.otherLines));
+        isModified = text != diskBody || !metaMatches;
     } else {
         const bool textEmpty = text.isEmpty() || text == QStringLiteral("# Start writing\n");
-        const bool metaEmpty = m_metadata.title.isEmpty() && m_metadata.topic.isEmpty();
-        if (textEmpty && metaEmpty) {
-            isModified = false;
-        }
+        isModified = !textEmpty || !m_metadata.title.isEmpty() || !m_metadata.topic.isEmpty();
     }
 
     setModified(isModified);
@@ -605,7 +604,7 @@ void Backend::updateModifiedState() {
         setStatus(QStringLiteral("Unsaved"));
         scheduleRecovery();
     } else {
-        setStatus(m_fileUrl.isValid() ? QStringLiteral("Saved") : QStringLiteral(""));
+        setStatus(m_fileUrl.isValid() ? QStringLiteral("Saved") : QString());
         clearRecovery();
     }
 }
@@ -619,10 +618,8 @@ bool Backend::editorTextChanged() {
         return false;
     m_lastDocumentText = text;
 
-    if (m_document) {
+    if (m_document)
         reapplyTypographyToChange();
-        m_formattedBlockCount = m_document->blockCount();
-    }
 
     scheduleWordCount();
     updateModifiedState();
@@ -636,17 +633,8 @@ QVariantList Backend::hiddenRangesAt(int position) const {
 
     const QTextBlock block =
         m_document->findBlock(qBound(0, position, m_document->characterCount() - 1));
-    if (!block.isValid())
+    if (!block.isValid() || isVerbatimBlock(block) || MarkdownHighlighter::isRuleLine(block.text()))
         return ranges;
-
-    if (block.userState() == MarkdownHighlighter::StateInCodeBlock
-            || block.userState() == MarkdownHighlighter::StateInFrontmatter
-            || MarkdownHighlighter::isFenceLine(block.text())
-            || MarkdownHighlighter::isClosingFence(block.text())
-            || (block.blockNumber() == 0 && block.text().trimmed() == QStringLiteral("---"))
-            || MarkdownHighlighter::isRuleLine(block.text())) {
-        return ranges;
-    }
 
     const int lineStart = block.position();
     struct MarkerSpan {
@@ -683,14 +671,6 @@ void Backend::setSearchHighlight(const QString &query, int currentMatchStart) {
     if (m_highlighter)
         m_highlighter->setSearch(query, currentMatchStart);
 }
-
-void Backend::openExternalUrl(const QUrl &url) {
-    const QString scheme = url.scheme().toLower();
-    if (scheme == QStringLiteral("http") || scheme == QStringLiteral("https")
-            || scheme == QStringLiteral("mailto"))
-        QDesktopServices::openUrl(url);
-}
-
 
 void Backend::loadDocumentText(const QString &text) {
     if (!m_document) {
@@ -733,54 +713,45 @@ void Backend::setStatus(const QString &status) {
     emit statusChanged();
 }
 
-void Backend::saveTo(const QUrl &url) {
+void Backend::failSave(const QString &status) {
+    setStatus(status);
+    emit saveFinished(false);
+}
+
+void Backend::saveAs(const QUrl &url) {
     if (!url.isLocalFile()) {
-        m_closeAfterSave = false;
-        setStatus(QStringLiteral("Only local files can be saved."));
+        failSave(QStringLiteral("Only local files can be saved."));
         return;
     }
 
     QString localPath = url.toLocalFile();
-    if (QFileInfo(localPath).suffix().isEmpty()) {
+    if (QFileInfo(localPath).suffix().isEmpty())
         localPath += QStringLiteral(".md");
-    }
     const QString targetName = QFileInfo(localPath).fileName();
 
-    QString fileContent;
+    QString fileContent = currentDocumentText();
     if (m_metadata.hasMetadata) {
-        const QString fileBaseName = QFileInfo(localPath).completeBaseName();
-        const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
-
         if (m_metadata.title.trimmed().isEmpty()) {
-            QString body = currentDocumentText();
-            QString firstLine = body.section(QLatin1Char('\n'), 0, 0).trimmed();
-            if (firstLine.startsWith(QLatin1Char('#'))) {
-                firstLine = firstLine.remove(QRegularExpression(QStringLiteral("^#+\\s*"))).trimmed();
-            }
-            if (!firstLine.isEmpty()) {
-                m_metadata.title = firstLine.left(100);
-            } else if (fileBaseName != QStringLiteral("Untitled")) {
+            const QString headingTitle = firstLineTitle(fileContent);
+            const QString fileBaseName = QFileInfo(localPath).completeBaseName();
+            if (!headingTitle.isEmpty())
+                m_metadata.title = headingTitle;
+            else if (fileBaseName != QStringLiteral("Untitled"))
                 m_metadata.title = fileBaseName;
-            }
         }
-        if (m_metadata.author.isEmpty()) {
+        if (m_metadata.author.isEmpty())
             m_metadata.author = defaultAuthor();
-        }
-        if (m_metadata.created.isEmpty()) {
+        const QString now = timestamp(QDateTime::currentDateTime());
+        if (m_metadata.created.isEmpty())
             m_metadata.created = now;
-        }
         m_metadata.updated = now;
 
-        fileContent = serializeFileContent(currentDocumentText());
-    } else {
-        fileContent = currentDocumentText();
+        fileContent = serializeFileContent(fileContent);
     }
 
-    QUrl finalUrl = QUrl::fromLocalFile(localPath);
     QSaveFile file(localPath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
-        m_closeAfterSave = false;
-        setStatus(QStringLiteral("Could not save %1.").arg(targetName));
+        failSave(QStringLiteral("Could not save %1.").arg(targetName));
         return;
     }
 
@@ -789,84 +760,58 @@ void Backend::saveTo(const QUrl &url) {
 
     // QSaveFile commits by replacing the target. Stop watching the old inode
     // before that replacement so our own write is not classified as external.
-    const QStringList watched = m_fileWatcher.files();
-    if (!watched.isEmpty())
-        m_fileWatcher.removePaths(watched);
+    unwatchAll(m_fileWatcher);
 
     // commit() flushes, fsyncs, and atomically renames the temp file into place,
     // returning false (and leaving the original untouched) on any write error.
     if (!file.commit()) {
         watchCurrentFile();
-        m_closeAfterSave = false;
-        setStatus(QStringLiteral("Could not write %1.").arg(targetName));
+        failSave(QStringLiteral("Could not write %1.").arg(targetName));
         return;
     }
 
-    const bool shouldClose = m_closeAfterSave;
-    m_closeAfterSave = false;
     m_lastKnownFileContents = contents;
     m_hasKnownFileContents = true;
     m_lastDocumentText = currentDocumentText();
-    setFileUrl(finalUrl);
+    setFileUrl(QUrl::fromLocalFile(localPath));
     watchCurrentFile();
-    QSettings().setValue(lastSaveDirectorySetting,
-                         QFileInfo(localPath).absolutePath());
+    QSettings().setValue(lastSaveDirectorySetting, QFileInfo(localPath).absolutePath());
     setModified(false);
     setStatus(QStringLiteral("Saved %1").arg(fileName()));
     clearRecovery();
-    emit saveSucceeded();
-
-    if (shouldClose)
-        emit closeAfterSave();
+    emit saveFinished(true);
 }
 
 void Backend::scheduleRecovery() {
     m_recoveryTimer.start();
 }
 
-QString Backend::recoveryPath() const {
-    return m_recoveryPath;
-}
-
 void Backend::writeRecovery() {
-    if (!m_modified)
+    if (!m_modified || m_recoveryPath.isEmpty())
         return;
-    const QString path = recoveryPath();
-    if (path.isEmpty())
-        return;
-    QDir().mkpath(QFileInfo(path).absolutePath());
-    QSaveFile file(path);
+
+    QSaveFile file(m_recoveryPath);
     if (!file.open(QIODevice::WriteOnly))
         return;
 
-    QJsonObject metaObj;
-    metaObj[QStringLiteral("hasMetadata")] = m_metadata.hasMetadata;
-    metaObj[QStringLiteral("title")] = m_metadata.title;
-    metaObj[QStringLiteral("author")] = m_metadata.author;
-    metaObj[QStringLiteral("topic")] = m_metadata.topic;
-    metaObj[QStringLiteral("created")] = m_metadata.created;
-    metaObj[QStringLiteral("updated")] = m_metadata.updated;
-
-    if (!m_metadata.otherFields.isEmpty()) {
-        QJsonArray otherArr;
-        for (const auto &pair : m_metadata.otherFields) {
-            QJsonObject fieldObj;
-            fieldObj[QStringLiteral("key")] = pair.first;
-            fieldObj[QStringLiteral("value")] = pair.second;
-            otherArr.append(fieldObj);
-        }
-        metaObj[QStringLiteral("otherFields")] = otherArr;
-    }
-
+    const QJsonObject metadata{
+        {QStringLiteral("hasMetadata"), m_metadata.hasMetadata},
+        {QStringLiteral("title"), m_metadata.title},
+        {QStringLiteral("author"), m_metadata.author},
+        {QStringLiteral("topic"), m_metadata.topic},
+        {QStringLiteral("created"), m_metadata.created},
+        {QStringLiteral("updated"), m_metadata.updated},
+        {QStringLiteral("otherLines"), QJsonArray::fromStringList(m_metadata.otherLines)},
+    };
     const QJsonObject recovery{{QStringLiteral("fileUrl"), m_fileUrl.toString()},
                                {QStringLiteral("text"), currentDocumentText()},
-                               {QStringLiteral("metadata"), metaObj}};
+                               {QStringLiteral("metadata"), metadata}};
     file.write(QJsonDocument(recovery).toJson(QJsonDocument::Compact));
     file.commit();
 }
 
 void Backend::restoreRecovery() {
-    QFile file(recoveryPath());
+    QFile file(m_recoveryPath);
     if (!file.open(QIODevice::ReadOnly))
         return;
     const QJsonDocument json = QJsonDocument::fromJson(file.readAll());
@@ -876,22 +821,17 @@ void Backend::restoreRecovery() {
     loadDocumentText(recovery.value(QStringLiteral("text")).toString());
 
     if (recovery.contains(QStringLiteral("metadata"))) {
-        QJsonObject metaObj = recovery.value(QStringLiteral("metadata")).toObject();
-        m_metadata.hasMetadata = metaObj.value(QStringLiteral("hasMetadata")).toBool();
-        m_metadata.title = metaObj.value(QStringLiteral("title")).toString();
-        m_metadata.author = metaObj.value(QStringLiteral("author")).toString();
-        m_metadata.topic = metaObj.value(QStringLiteral("topic")).toString();
-        m_metadata.created = metaObj.value(QStringLiteral("created")).toString();
-        m_metadata.updated = metaObj.value(QStringLiteral("updated")).toString();
-        m_metadata.otherFields.clear();
-        if (metaObj.contains(QStringLiteral("otherFields"))) {
-            const QJsonArray otherArr = metaObj.value(QStringLiteral("otherFields")).toArray();
-            for (const auto &val : otherArr) {
-                const QJsonObject fieldObj = val.toObject();
-                m_metadata.otherFields.append({fieldObj.value(QStringLiteral("key")).toString(),
-                                               fieldObj.value(QStringLiteral("value")).toString()});
-            }
-        }
+        const QJsonObject metadata = recovery.value(QStringLiteral("metadata")).toObject();
+        m_metadata.hasMetadata = metadata.value(QStringLiteral("hasMetadata")).toBool();
+        m_metadata.title = metadata.value(QStringLiteral("title")).toString();
+        m_metadata.author = metadata.value(QStringLiteral("author")).toString();
+        m_metadata.topic = metadata.value(QStringLiteral("topic")).toString();
+        m_metadata.created = metadata.value(QStringLiteral("created")).toString();
+        m_metadata.updated = metadata.value(QStringLiteral("updated")).toString();
+        m_metadata.otherLines.clear();
+        const QJsonArray otherLines = metadata.value(QStringLiteral("otherLines")).toArray();
+        for (const QJsonValue &line : otherLines)
+            m_metadata.otherLines.append(line.toString());
     }
 
     const QUrl recoveredUrl(recovery.value(QStringLiteral("fileUrl")).toString());
@@ -910,58 +850,27 @@ void Backend::restoreRecovery() {
 
 void Backend::clearRecovery() {
     m_recoveryTimer.stop();
-    QFile::remove(recoveryPath());
+    if (!m_recoveryPath.isEmpty())
+        QFile::remove(m_recoveryPath);
 }
 
 void Backend::watchCurrentFile() {
-    const QStringList watched = m_fileWatcher.files();
-    if (!watched.isEmpty())
-        m_fileWatcher.removePaths(watched);
+    unwatchAll(m_fileWatcher);
     if (m_fileUrl.isLocalFile() && QFileInfo::exists(m_fileUrl.toLocalFile()))
         m_fileWatcher.addPath(m_fileUrl.toLocalFile());
 }
 
-
-
-
-QUrl Backend::suggestedFolder() const {
+QString Backend::suggestedSavePath() const {
     if (m_fileUrl.isLocalFile())
-        return QUrl::fromLocalFile(QFileInfo(m_fileUrl.toLocalFile()).absolutePath());
+        return m_fileUrl.toLocalFile();
 
     const QString savedDirectory = QSettings().value(lastSaveDirectorySetting).toString();
     const QDir directory = savedDirectory.isEmpty() || !QDir(savedDirectory).exists()
         ? QDir::home()
         : QDir(savedDirectory);
-    return QUrl::fromLocalFile(directory.absolutePath());
-}
-
-QUrl Backend::suggestedPdfUrl() const {
-    if (m_fileUrl.isLocalFile()) {
-        const QFileInfo fi(m_fileUrl.toLocalFile());
-        return QUrl::fromLocalFile(fi.absoluteDir().filePath(fi.completeBaseName() + QStringLiteral(".pdf")));
-    }
-    const QUrl saveUrl = suggestedSaveUrl();
-    const QFileInfo fi(saveUrl.toLocalFile());
-    return QUrl::fromLocalFile(fi.absoluteDir().filePath(fi.completeBaseName() + QStringLiteral(".pdf")));
-}
-
-QUrl Backend::suggestedSaveUrl() const {
-    if (m_fileUrl.isLocalFile())
-        return m_fileUrl;
-
-    const QString savedDirectory = QSettings().value(lastSaveDirectorySetting).toString();
-    const QDir directory = savedDirectory.isEmpty() || !QDir(savedDirectory).exists()
-        ? QDir::home()
-        : QDir(savedDirectory);
-
-    QString name;
-    if (!m_metadata.title.trimmed().isEmpty()) {
-        name = sanitizeFileName(m_metadata.title.trimmed());
-    } else {
-        name = suggestedFileName(currentDocumentText());
-    }
-
-    return QUrl::fromLocalFile(directory.filePath(name));
+    const QString title = m_metadata.title.trimmed();
+    return directory.filePath(title.isEmpty() ? suggestedFileName(currentDocumentText())
+                                              : sanitizeFileName(title));
 }
 
 QString Backend::currentDocumentText() const {
@@ -969,11 +878,7 @@ QString Backend::currentDocumentText() const {
 }
 
 int Backend::countWords(const QString &text) {
-    const FrontmatterInfo info = parseFrontmatter(text);
-    QString body = text;
-    if (info.hasFrontmatter && info.length <= text.length()) {
-        body = text.mid(info.length);
-    }
+    const QString body = documentBody(text, parseFrontmatter(text));
     static const QRegularExpression wordRe(
         QStringLiteral("[\\p{L}\\p{N}]+(?:['-][\\p{L}\\p{N}]+)*"));
     int count = 0;
@@ -986,61 +891,43 @@ int Backend::countWords(const QString &text) {
 }
 
 void Backend::initNewDocumentMetadata() {
+    const QString now = timestamp(QDateTime::currentDateTime());
+    m_metadata = Metadata{};
     m_metadata.hasMetadata = true;
     m_metadata.author = defaultAuthor();
-    const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
     m_metadata.created = now;
     m_metadata.updated = now;
-    m_metadata.title.clear();
-    m_metadata.topic.clear();
-    m_metadata.otherFields.clear();
 }
 
 QString Backend::serializeFileContent(const QString &bodyText) const {
-    const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
-    const QString titleToSet = m_metadata.title;
-    const QString authorStr = m_metadata.author.isEmpty() ? defaultAuthor() : m_metadata.author;
-    const QString createdStr = m_metadata.created.isEmpty() ? now : m_metadata.created;
-    const QString updatedStr = now;
-
     QString yaml = QStringLiteral("---\n");
-    if (!titleToSet.isEmpty())
-        yaml += QStringLiteral("title: %1\n").arg(titleToSet);
-    if (!authorStr.isEmpty())
-        yaml += QStringLiteral("author: %1\n").arg(authorStr);
-    if (!m_metadata.topic.isEmpty())
-        yaml += QStringLiteral("topic: %1\n").arg(m_metadata.topic);
-    yaml += QStringLiteral("created: %1\n").arg(createdStr);
-    yaml += QStringLiteral("updated: %1\n").arg(updatedStr);
+    const auto writeField = [this, &yaml](const QString &key, const QString &value) {
+        const QString keyPrefix = key + QLatin1Char(':');
+        const bool keptVerbatim = std::any_of(
+            m_metadata.otherLines.cbegin(), m_metadata.otherLines.cend(),
+            [&keyPrefix](const QString &line) { return line.startsWith(keyPrefix); });
+        if (!value.isEmpty() && !keptVerbatim)
+            yaml += key + QStringLiteral(": ") + yamlScalar(value) + QLatin1Char('\n');
+    };
+    writeField(QStringLiteral("title"), m_metadata.title);
+    writeField(QStringLiteral("author"), m_metadata.author);
+    writeField(QStringLiteral("topic"), m_metadata.topic);
+    writeField(QStringLiteral("created"), m_metadata.created);
+    writeField(QStringLiteral("updated"), m_metadata.updated);
+    for (const QString &line : m_metadata.otherLines)
+        yaml += line + QLatin1Char('\n');
 
-    for (const auto &pair : m_metadata.otherFields) {
-        yaml += QStringLiteral("%1: %2\n").arg(pair.first, pair.second);
-    }
-    yaml += QStringLiteral("---\n\n");
-
-    return yaml + bodyText;
+    return yaml + QStringLiteral("---\n\n") + bodyText;
 }
 
 QString Backend::suggestedFileName(const QString &text) {
     const FrontmatterInfo info = parseFrontmatter(text);
-    QString name;
-    if (info.hasFrontmatter && !info.title.trimmed().isEmpty()) {
-        name = info.title.trimmed();
-    } else {
-        QString body = text;
-        if (info.hasFrontmatter && info.length <= body.length()) {
-            body = body.mid(info.length).trimmed();
-        }
-        name = body.section(QLatin1Char('\n'), 0, 0).trimmed();
-        if (name.startsWith(QLatin1Char('#'))) {
-            name = name.remove(QRegularExpression(QStringLiteral("^#+\\s*"))).trimmed();
-        }
-    }
-    return sanitizeFileName(name);
+    const QString title = info.title.trimmed();
+    return sanitizeFileName(title.isEmpty() ? firstLineTitle(documentBody(text, info)) : title);
 }
 
 QString Backend::defaultAuthor() const {
-    const QString saved = QSettings().value(QStringLiteral("metadata/defaultAuthor")).toString();
+    const QString saved = QSettings().value(defaultAuthorSetting).toString();
     if (!saved.isEmpty())
         return saved;
     const QString envUser = qEnvironmentVariable("USER");
@@ -1050,66 +937,37 @@ QString Backend::defaultAuthor() const {
 }
 
 void Backend::setDefaultAuthor(const QString &author) {
-    QSettings().setValue(QStringLiteral("metadata/defaultAuthor"), author);
+    QSettings().setValue(defaultAuthorSetting, author);
 }
 
 QVariantMap Backend::documentMetadata() const {
-    QVariantMap meta;
-    meta[QStringLiteral("hasFrontmatter")] = m_metadata.hasMetadata;
-
-    QString defaultTitle = m_metadata.title;
-    if (defaultTitle.isEmpty()) {
-        if (m_fileUrl.isLocalFile()) {
-            const QFileInfo fi(m_fileUrl.toLocalFile());
-            defaultTitle = fi.completeBaseName();
-        } else {
-            const QString text = currentDocumentText();
-            QString firstLine = text.section(QLatin1Char('\n'), 0, 0).trimmed();
-            if (firstLine.startsWith(QLatin1Char('#'))) {
-                defaultTitle = firstLine.remove(QRegularExpression(QStringLiteral("^#+\\s*"))).trimmed();
-            } else if (!firstLine.isEmpty()) {
-                defaultTitle = firstLine.left(60);
-            }
-        }
+    QString title = m_metadata.title;
+    if (title.isEmpty()) {
+        title = m_fileUrl.isLocalFile()
+            ? QFileInfo(m_fileUrl.toLocalFile()).completeBaseName()
+            : firstLineTitle(currentDocumentText());
     }
-    meta[QStringLiteral("title")] = defaultTitle;
-    meta[QStringLiteral("author")] = m_metadata.author.isEmpty() ? defaultAuthor() : m_metadata.author;
-    meta[QStringLiteral("topic")] = m_metadata.topic;
 
-    QString createdTime = m_metadata.created;
-    QString updatedTime = m_metadata.updated;
-    if (createdTime.isEmpty()) {
-        if (m_fileUrl.isLocalFile() && QFileInfo::exists(m_fileUrl.toLocalFile())) {
-            const QFileInfo fi(m_fileUrl.toLocalFile());
-            QDateTime bTime = fi.birthTime();
-            if (!bTime.isValid()) bTime = fi.lastModified();
-            createdTime = bTime.toString(QStringLiteral("yyyy-MM-dd HH:mm"));
-            updatedTime = fi.lastModified().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
-        } else {
-            const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
-            createdTime = now;
-            updatedTime = now;
-        }
-    }
-    meta[QStringLiteral("created")] = createdTime;
-    meta[QStringLiteral("updated")] = updatedTime;
-
-    return meta;
+    return {
+        {QStringLiteral("title"), title},
+        {QStringLiteral("author"), m_metadata.author.isEmpty() ? defaultAuthor() : m_metadata.author},
+        {QStringLiteral("topic"), m_metadata.topic},
+        {QStringLiteral("created"), m_metadata.created},
+        {QStringLiteral("updated"), m_metadata.updated},
+    };
 }
 
 void Backend::updateDocumentMetadata(const QString &title, const QString &author, const QString &topic) {
-    if (!author.isEmpty()) {
+    if (!author.isEmpty())
         setDefaultAuthor(author);
-    }
-    const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
 
     m_metadata.hasMetadata = true;
     m_metadata.title = title;
     m_metadata.author = author.isEmpty() ? defaultAuthor() : author;
     m_metadata.topic = topic;
-    if (m_metadata.created.isEmpty()) {
+    const QString now = timestamp(QDateTime::currentDateTime());
+    if (m_metadata.created.isEmpty())
         m_metadata.created = now;
-    }
     m_metadata.updated = now;
 
     updateModifiedState();
@@ -1132,68 +990,26 @@ void Backend::scheduleWordCount() {
 }
 
 bool Backend::isInCodeBlock(int cursorPosition) const {
-    if (!m_document) return false;
-    QTextBlock block = m_document->findBlock(cursorPosition);
-    if (!block.isValid()) return false;
-    return (block.userState() == MarkdownHighlighter::StateInCodeBlock)
-        || (block.userState() == MarkdownHighlighter::StateInFrontmatter)
-        || MarkdownHighlighter::isFenceLine(block.text())
-        || MarkdownHighlighter::isClosingFence(block.text())
-        || (block.blockNumber() == 0 && block.text().trimmed() == QStringLiteral("---"));
+    return m_document && isVerbatimBlock(m_document->findBlock(cursorPosition));
 }
 
 void Backend::applyDocumentTypography() {
     if (!m_document)
         return;
 
-    QTextBlockFormat blockFormat;
-    blockFormat.setLineHeight(typoraLineHeightPercent, QTextBlockFormat::ProportionalHeight);
-
     const bool undoEnabled = m_document->isUndoRedoEnabled();
     m_document->setUndoRedoEnabled(false);
-
     m_formattingTypography = true;
+
     QTextCursor cursor(m_document);
-    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next()) {
-        const QString text = block.text();
-        const bool inSpecial = (block.userState() == MarkdownHighlighter::StateInCodeBlock)
-            || (block.userState() == MarkdownHighlighter::StateInFrontmatter)
-            || MarkdownHighlighter::isFenceLine(text)
-            || MarkdownHighlighter::isClosingFence(text)
-            || (block.blockNumber() == 0 && text.trimmed() == QStringLiteral("---"));
+    for (QTextBlock block = m_document->begin(); block.isValid(); block = block.next())
+        applyBlockTypography(cursor, block);
 
-        QTextBlockFormat bf = blockFormat;
-        static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
-        static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}\\*(?:\\s*\\*){2,}\\s*$"));
-        if (!inSpecial && (headingRe.match(text).hasMatch() || ruleRe.match(text).hasMatch())) {
-            bf.setAlignment(Qt::AlignHCenter);
-            bf.clearBackground();
-            bf.setTopMargin(0);
-            bf.setBottomMargin(0);
-        } else {
-            bf.setAlignment(Qt::AlignLeft);
-            bf.clearBackground();
-            bf.setTopMargin(0);
-            bf.setBottomMargin(0);
-        }
-        cursor.setPosition(block.position());
-        cursor.select(QTextCursor::BlockUnderCursor);
-        cursor.mergeBlockFormat(bf);
-    }
     m_formattingTypography = false;
-
     m_document->setUndoRedoEnabled(undoEnabled);
-
-    m_formattedBlockCount = m_document->blockCount();
 }
 
 void Backend::reapplyTypographyToChange() {
-    if (!m_document)
-        return;
-
-    QTextBlockFormat blockFormat;
-    blockFormat.setLineHeight(typoraLineHeightPercent, QTextBlockFormat::ProportionalHeight);
-
     const int maxPos = m_document->characterCount() - 1;
     const int start = qBound(0, m_lastChangePos, maxPos);
     const int end = qBound(start, m_lastChangePos + m_lastChangeAdded, maxPos);
@@ -1201,40 +1017,14 @@ void Backend::reapplyTypographyToChange() {
     m_formattingTypography = true;
     QTextCursor cursor(m_document);
     cursor.joinPreviousEditBlock();
-    
-    QTextBlock block = m_document->findBlock(start);
-    QTextBlock endBlock = m_document->findBlock(end);
-    
-    while (block.isValid() && block.position() <= endBlock.position()) {
-        const QString text = block.text();
-        const bool inSpecial = (block.userState() == MarkdownHighlighter::StateInCodeBlock)
-            || (block.userState() == MarkdownHighlighter::StateInFrontmatter)
-            || MarkdownHighlighter::isFenceLine(text)
-            || MarkdownHighlighter::isClosingFence(text)
-            || (block.blockNumber() == 0 && text.trimmed() == QStringLiteral("---"));
 
-        QTextBlockFormat bf = blockFormat;
-        static const QRegularExpression headingRe(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
-        static const QRegularExpression ruleRe(QStringLiteral("^\\s{0,3}\\*(?:\\s*\\*){2,}\\s*$"));
-        if (!inSpecial && (headingRe.match(text).hasMatch() || ruleRe.match(text).hasMatch())) {
-            bf.setAlignment(Qt::AlignHCenter);
-            bf.clearBackground();
-            bf.setTopMargin(0);
-            bf.setBottomMargin(0);
-        } else {
-            bf.setAlignment(Qt::AlignLeft);
-            bf.clearBackground();
-            bf.setTopMargin(0);
-            bf.setBottomMargin(0);
-        }
-        cursor.setPosition(block.position());
-        cursor.select(QTextCursor::BlockUnderCursor);
-        cursor.mergeBlockFormat(bf);
-        
-        if (block == endBlock) break;
-        block = block.next();
+    const QTextBlock endBlock = m_document->findBlock(end);
+    for (QTextBlock block = m_document->findBlock(start); block.isValid(); block = block.next()) {
+        applyBlockTypography(cursor, block);
+        if (block == endBlock)
+            break;
     }
-    
+
     cursor.endEditBlock();
     m_formattingTypography = false;
 }

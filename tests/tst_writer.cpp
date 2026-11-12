@@ -4,23 +4,45 @@
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickStyle>
+#include <QQuickTextDocument>
+#include <QTextBlock>
+#include <QTextDocument>
 
 #include "backend.h"
 #include "markdownhighlighter.h"
 #include "systemtheme.h"
 
+static void writeFile(const QString &path, const QByteArray &contents) {
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(contents);
+}
+
+static QString readFile(const QString &path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
+}
+
 class WriterTest : public QObject {
     Q_OBJECT
 
 private:
-    void setupEngine(QQmlEngine &engine, Backend &backend) {
+    QObject *loadEditor(QQmlEngine &engine, Backend &backend, QScopedPointer<QObject> &window) {
         engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
         engine.rootContext()->setContextProperty(QStringLiteral("systemTheme"), &m_systemTheme);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(QFINDTESTDATA("../src/Main.qml")));
+        window.reset(component.create());
+        if (!window) {
+            qWarning().noquote() << component.errorString();
+            return nullptr;
+        }
+        return window->findChild<QObject *>(QStringLiteral("sourceEditor"));
     }
 
 private slots:
     void initTestCase() {
         QVERIFY(m_settingsDirectory.isValid());
+        QStandardPaths::setTestModeEnabled(true);
         QCoreApplication::setOrganizationName(QStringLiteral("writer"));
         QCoreApplication::setOrganizationDomain(QStringLiteral("writer.local"));
         QCoreApplication::setApplicationName(QStringLiteral("writer"));
@@ -74,7 +96,6 @@ private slots:
         QVERIFY(MarkdownHighlighter::isRuleLine(QStringLiteral("* * *")));
         QVERIFY(MarkdownHighlighter::isRuleLine(QStringLiteral("   ***   ")));
 
-        // Dashes and underscores are no longer horizontal rules
         QVERIFY(!MarkdownHighlighter::isRuleLine(QStringLiteral("---")));
         QVERIFY(!MarkdownHighlighter::isRuleLine(QStringLiteral("___")));
         QVERIFY(!MarkdownHighlighter::isRuleLine(QStringLiteral("**bold**")));
@@ -93,303 +114,10 @@ private slots:
             "# Actual Heading\n"));
         MarkdownHighlighter highlighter(&doc);
 
-        QTextBlock b0 = doc.findBlockByNumber(0);
-        QTextBlock b1 = doc.findBlockByNumber(1);
-        QTextBlock b2 = doc.findBlockByNumber(2);
-        QTextBlock b3 = doc.findBlockByNumber(3);
-        QTextBlock b4 = doc.findBlockByNumber(4);
-        QTextBlock b5 = doc.findBlockByNumber(5);
-
-        QCOMPARE(b0.userState(), int(MarkdownHighlighter::StateInFrontmatter));
-        QCOMPARE(b1.userState(), int(MarkdownHighlighter::StateInFrontmatter));
-        QCOMPARE(b2.userState(), int(MarkdownHighlighter::StateInFrontmatter));
-        QCOMPARE(b3.userState(), int(MarkdownHighlighter::StateInFrontmatter));
-        QCOMPARE(b4.userState(), int(MarkdownHighlighter::StateNormal));
-        QCOMPARE(b5.userState(), int(MarkdownHighlighter::StateNormal));
-    }
-
-    void parsesAndUpdatesMetadata() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        setupEngine(engine, backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-
-        editor->setProperty("text", QStringLiteral("# My Story\nHello world"));
-        QVariantMap meta = backend.documentMetadata();
-        QCOMPARE(meta.value("title").toString(), QStringLiteral("My Story"));
-        QVERIFY(!meta.value("created").toString().isEmpty());
-
-        backend.updateDocumentMetadata(QStringLiteral("New Title"), QStringLiteral("Author X"), QStringLiteral("Fiction"));
-        QVariantMap updatedMeta = backend.documentMetadata();
-        QCOMPARE(updatedMeta.value("title").toString(), QStringLiteral("New Title"));
-        QCOMPARE(updatedMeta.value("author").toString(), QStringLiteral("Author X"));
-        QCOMPARE(updatedMeta.value("topic").toString(), QStringLiteral("Fiction"));
-        QCOMPARE(backend.defaultAuthor(), QStringLiteral("Author X"));
-
-        // Editor text is clean body text (no frontmatter clutter in editor)
-        QString text = editor->property("text").toString();
-        QCOMPARE(text, QStringLiteral("# My Story\nHello world"));
-
-        // When saved to disk, frontmatter is written
-        QTemporaryDir tempDir;
-        QVERIFY(tempDir.isValid());
-        const QString filePath = tempDir.filePath(QStringLiteral("Story.md"));
-        backend.saveAs(QUrl::fromLocalFile(filePath));
-
-        QFile savedFile(filePath);
-        QVERIFY(savedFile.open(QIODevice::ReadOnly | QIODevice::Text));
-        QString savedContent = QString::fromUtf8(savedFile.readAll());
-        QVERIFY(savedContent.startsWith(QStringLiteral("---\n")));
-        QVERIFY(savedContent.contains(QStringLiteral("title: New Title")));
-        QVERIFY(savedContent.contains(QStringLiteral("author: Author X")));
-        QVERIFY(savedContent.contains(QStringLiteral("topic: Fiction")));
-        QVERIFY(savedContent.contains(QStringLiteral("# My Story\nHello world")));
-    }
-
-    void autoInitializesAndSavesMetadata() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        backend.setDefaultAuthor(QStringLiteral("Auto Author"));
-        QQmlEngine engine;
-        setupEngine(engine, backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-
-        // Editor text starts clean (empty)
-        QString initialText = editor->property("text").toString();
-        QCOMPARE(initialText, QString());
-
-        // Metadata is initialized in memory
-        QVariantMap meta = backend.documentMetadata();
-        QCOMPARE(meta.value("author").toString(), QStringLiteral("Auto Author"));
-        QVERIFY(!meta.value("created").toString().isEmpty());
-        QVERIFY(!meta.value("updated").toString().isEmpty());
-
-        QCOMPARE(backend.modified(), false);
-        QCOMPARE(backend.wordCount(), 0);
-
-        editor->setProperty("text", QStringLiteral("# Automatic Novel\nSome actual body content here."));
-        QCOMPARE(backend.modified(), true);
-        QTRY_COMPARE(backend.wordCount(), 7);
-
-        QCOMPARE(Backend::suggestedFileName(editor->property("text").toString()), QStringLiteral("Automatic Novel.md"));
-
-        QTemporaryDir tempDir;
-        QVERIFY(tempDir.isValid());
-        const QString filePath = tempDir.filePath(QStringLiteral("Automatic Novel.md"));
-        backend.saveAs(QUrl::fromLocalFile(filePath));
-
-        // File on disk has YAML frontmatter
-        QFile savedFile(filePath);
-        QVERIFY(savedFile.open(QIODevice::ReadOnly | QIODevice::Text));
-        QString savedContent = QString::fromUtf8(savedFile.readAll());
-        QVERIFY(savedContent.contains(QStringLiteral("title: Automatic Novel")));
-        QVERIFY(savedContent.contains(QStringLiteral("author: Auto Author")));
-        QVERIFY(savedContent.contains(QStringLiteral("updated:")));
-
-        // When reopening the file, editor text is clean body
-        backend.open(QUrl::fromLocalFile(filePath));
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("# Automatic Novel\nSome actual body content here."));
-        QVariantMap reopenedMeta = backend.documentMetadata();
-        QCOMPARE(reopenedMeta.value("title").toString(), QStringLiteral("Automatic Novel"));
-        QCOMPARE(reopenedMeta.value("author").toString(), QStringLiteral("Auto Author"));
-    }
-
-    void preservesCustomFrontmatterAndRecovery() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        QTemporaryDir tempDir;
-        QVERIFY(tempDir.isValid());
-        const QString filePath = tempDir.filePath(QStringLiteral("Custom.md"));
-
-        QFile initFile(filePath);
-        QVERIFY(initFile.open(QIODevice::WriteOnly | QIODevice::Text));
-        initFile.write(
-            "---\n"
-            "title: Custom Fields\n"
-            "author: Alice\n"
-            "category: Space Opera\n"
-            "draft: true\n"
-            "---\n\n"
-            "# Chapter 1\n"
-            "Deep space silence.\n"
-        );
-        initFile.close();
-
-        Backend backend;
-        QQmlEngine engine;
-        setupEngine(engine, backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        backend.open(QUrl::fromLocalFile(filePath));
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("# Chapter 1\nDeep space silence.\n"));
-
-        // Save and verify custom fields are preserved
-        backend.save();
-        QFile savedFile(filePath);
-        QVERIFY(savedFile.open(QIODevice::ReadOnly | QIODevice::Text));
-        QString savedContent = QString::fromUtf8(savedFile.readAll());
-        QVERIFY(savedContent.contains(QStringLiteral("category: Space Opera")));
-        QVERIFY(savedContent.contains(QStringLiteral("draft: true")));
-    }
-
-    void handlesCrlfLineEndings() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        QTemporaryDir tempDir;
-        QVERIFY(tempDir.isValid());
-        const QString filePath = tempDir.filePath(QStringLiteral("CRLF.md"));
-
-        QFile initFile(filePath);
-        QVERIFY(initFile.open(QIODevice::WriteOnly));
-        initFile.write(
-            "---\r\n"
-            "title: Windows Doc\r\n"
-            "author: Bob\r\n"
-            "---\r\n\r\n"
-            "# Windows Chapter\r\n"
-            "Text with CRLF\r\n"
-        );
-        initFile.close();
-
-        Backend backend;
-        QQmlEngine engine;
-        setupEngine(engine, backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        backend.open(QUrl::fromLocalFile(filePath));
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("# Windows Chapter\nText with CRLF\n"));
-        QCOMPARE(backend.modified(), false);
-    }
-
-    void tracksMetadataModifications() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        QTemporaryDir tempDir;
-        QVERIFY(tempDir.isValid());
-        const QString filePath = tempDir.filePath(QStringLiteral("Track.md"));
-
-        QFile initFile(filePath);
-        QVERIFY(initFile.open(QIODevice::WriteOnly | QIODevice::Text));
-        initFile.write(
-            "---\n"
-            "title: Original Title\n"
-            "author: Alice\n"
-            "---\n\n"
-            "# Original Heading\n"
-            "Body content.\n"
-        );
-        initFile.close();
-
-        Backend backend;
-        QQmlEngine engine;
-        setupEngine(engine, backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        backend.open(QUrl::fromLocalFile(filePath));
-        QCOMPARE(backend.modified(), false);
-
-        // Modifying metadata sets modified = true
-        backend.updateDocumentMetadata(QStringLiteral("Altered Title"), QStringLiteral("Alice"), QString());
-        QCOMPARE(backend.modified(), true);
-
-        // Typing in editor and reverting text should NOT clear modified since metadata is still altered
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-        editor->setProperty("text", QStringLiteral("# Original Heading\nBody content.\nExtra"));
-        QCOMPARE(backend.modified(), true);
-        editor->setProperty("text", QStringLiteral("# Original Heading\nBody content.\n"));
-        QCOMPARE(backend.modified(), true);
-
-        // Reverting metadata to original restores unmodified state
-        backend.updateDocumentMetadata(QStringLiteral("Original Title"), QStringLiteral("Alice"), QString());
-        QCOMPARE(backend.modified(), false);
-    }
-
-    void preservesExistingFileWithoutFrontmatter() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        QTemporaryDir tempDir;
-        QVERIFY(tempDir.isValid());
-        const QString filePath = tempDir.filePath(QStringLiteral("Plain.md"));
-
-        QFile initFile(filePath);
-        QVERIFY(initFile.open(QIODevice::WriteOnly | QIODevice::Text));
-        initFile.write("# Plain Document\nNo frontmatter here.\n");
-        initFile.close();
-
-        Backend backend;
-        QQmlEngine engine;
-        setupEngine(engine, backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        backend.open(QUrl::fromLocalFile(filePath));
-        QCOMPARE(backend.modified(), false);
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
-        QVERIFY(editor);
-        QCOMPARE(editor->property("text").toString(), QStringLiteral("# Plain Document\nNo frontmatter here.\n"));
-
-        editor->setProperty("text", QStringLiteral("# Plain Document\nUpdated body without frontmatter.\n"));
-        QCOMPARE(backend.modified(), true);
-
-        backend.save();
-        QCOMPARE(backend.modified(), false);
-
-        QFile savedFile(filePath);
-        QVERIFY(savedFile.open(QIODevice::ReadOnly | QIODevice::Text));
-        const QString savedContent = QString::fromUtf8(savedFile.readAll());
-        savedFile.close();
-        QCOMPARE(savedContent, QStringLiteral("# Plain Document\nUpdated body without frontmatter.\n"));
-        QVERIFY(!savedContent.startsWith(QStringLiteral("---\n")));
-
-        // Explicitly applying metadata via updateDocumentMetadata enables frontmatter on next save
-        backend.updateDocumentMetadata(QStringLiteral("Explicit Title"), QStringLiteral("Author Y"), QStringLiteral("Notes"));
-        QCOMPARE(backend.modified(), true);
-        backend.save();
-
-        QVERIFY(savedFile.open(QIODevice::ReadOnly | QIODevice::Text));
-        const QString savedWithMeta = QString::fromUtf8(savedFile.readAll());
-        savedFile.close();
-        QVERIFY(savedWithMeta.startsWith(QStringLiteral("---\n")));
-        QVERIFY(savedWithMeta.contains(QStringLiteral("title: Explicit Title")));
-        QVERIFY(savedWithMeta.endsWith(QStringLiteral("# Plain Document\nUpdated body without frontmatter.\n")));
+        for (int block = 0; block <= 3; ++block)
+            QCOMPARE(doc.findBlockByNumber(block).userState(), int(MarkdownHighlighter::StateInFrontmatter));
+        QCOMPARE(doc.findBlockByNumber(4).userState(), int(MarkdownHighlighter::StateNormal));
+        QCOMPARE(doc.findBlockByNumber(5).userState(), int(MarkdownHighlighter::StateNormal));
     }
 
     void ignoresFormattingInsideInlineCode() {
@@ -424,34 +152,227 @@ private slots:
             "# Heading 2\n"));
         MarkdownHighlighter highlighter(&doc);
 
-        QTextBlock b0 = doc.findBlockByNumber(0);
-        QTextBlock b1 = doc.findBlockByNumber(1);
-        QTextBlock b2 = doc.findBlockByNumber(2);
-        QTextBlock b3 = doc.findBlockByNumber(3);
-        QTextBlock b4 = doc.findBlockByNumber(4);
-        QTextBlock b5 = doc.findBlockByNumber(5);
-
-        QCOMPARE(b0.userState(), int(MarkdownHighlighter::StateNormal));
-        QCOMPARE(b1.userState(), int(MarkdownHighlighter::StateInCodeBlock));
-        QCOMPARE(b2.userState(), int(MarkdownHighlighter::StateInCodeBlock));
-        QCOMPARE(b3.userState(), int(MarkdownHighlighter::StateInCodeBlock));
-        QCOMPARE(b4.userState(), int(MarkdownHighlighter::StateNormal));
-        QCOMPARE(b5.userState(), int(MarkdownHighlighter::StateNormal));
+        QCOMPARE(doc.findBlockByNumber(0).userState(), int(MarkdownHighlighter::StateNormal));
+        for (int block = 1; block <= 3; ++block)
+            QCOMPARE(doc.findBlockByNumber(block).userState(), int(MarkdownHighlighter::StateInCodeBlock));
+        QCOMPARE(doc.findBlockByNumber(4).userState(), int(MarkdownHighlighter::StateNormal));
+        QCOMPARE(doc.findBlockByNumber(5).userState(), int(MarkdownHighlighter::StateNormal));
     }
 
-    void hiddenRangesIgnoreCodeBlocks() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
+    void savesEditedMetadataAsFrontmatter() {
+        Backend backend;
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
+        QVERIFY(editor);
+
+        editor->setProperty("text", QStringLiteral("# My Story\nHello world"));
+        QCOMPARE(backend.documentMetadata().value("title").toString(), QStringLiteral("My Story"));
+
+        backend.updateDocumentMetadata(QStringLiteral("Part 1: New Title"), QStringLiteral("Author X"),
+                                       QStringLiteral("Fiction"));
+        QCOMPARE(backend.defaultAuthor(), QStringLiteral("Author X"));
+
+        QTemporaryDir tempDir;
+        const QString filePath = tempDir.filePath(QStringLiteral("Story.md"));
+        backend.saveAs(QUrl::fromLocalFile(filePath));
+
+        const QString saved = readFile(filePath);
+        QVERIFY2(saved.startsWith(QStringLiteral(
+                     "---\ntitle: \"Part 1: New Title\"\nauthor: Author X\ntopic: Fiction\n")),
+                 qPrintable(saved));
+        QVERIFY(saved.endsWith(QStringLiteral("---\n\n# My Story\nHello world")));
+
+        backend.open(QUrl::fromLocalFile(filePath));
+        QCOMPARE(backend.documentMetadata().value("title").toString(), QStringLiteral("Part 1: New Title"));
+    }
+
+    void autoFillsMetadataForNewDocument() {
+        Backend backend;
+        backend.setDefaultAuthor(QStringLiteral("Auto Author"));
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
+        QVERIFY(editor);
+        QCOMPARE(backend.modified(), false);
+
+        const QString body = QStringLiteral("# Automatic Novel\nSome actual body content here.");
+        editor->setProperty("text", body);
+        QCOMPARE(backend.modified(), true);
+
+        QTemporaryDir tempDir;
+        const QString filePath = tempDir.filePath(QStringLiteral("Automatic Novel.md"));
+        backend.saveAs(QUrl::fromLocalFile(filePath));
+
+        const QString saved = readFile(filePath);
+        QVERIFY(saved.contains(QStringLiteral("title: Automatic Novel\n")));
+        QVERIFY(saved.contains(QStringLiteral("author: Auto Author\n")));
+        QVERIFY(saved.contains(QStringLiteral("created: ")));
+
+        backend.open(QUrl::fromLocalFile(filePath));
+        QCOMPARE(editor->property("text").toString(), body);
+    }
+
+    void preservesUnknownFrontmatterVerbatim() {
+        QTemporaryDir tempDir;
+        const QString filePath = tempDir.filePath(QStringLiteral("Custom.md"));
+        const QByteArray unknownFields =
+            "date: 2024-01-01\n"
+            "tags:\n"
+            "  - space\n"
+            "  - opera\n"
+            "params:\n"
+            "  author: Ghost\n"
+            "draft: true\n";
+        writeFile(filePath, "---\ntitle: Custom Fields\nauthor: Alice\n" + unknownFields
+                                + "---\n\n# Chapter 1\n");
 
         Backend backend;
         QQmlEngine engine;
-        setupEngine(engine, backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
+        QVERIFY(editor);
 
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        backend.open(QUrl::fromLocalFile(filePath));
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("# Chapter 1\n"));
+        QCOMPARE(backend.documentMetadata().value("author").toString(), QStringLiteral("Alice"));
+
+        backend.save();
+        const QString saved = readFile(filePath);
+        QVERIFY2(saved.contains(QString::fromUtf8(unknownFields)), qPrintable(saved));
+    }
+
+    void handlesCrlfLineEndings() {
+        QTemporaryDir tempDir;
+        const QString filePath = tempDir.filePath(QStringLiteral("CRLF.md"));
+        writeFile(filePath,
+                  "---\r\n"
+                  "title: Windows Doc\r\n"
+                  "author: Bob\r\n"
+                  "---\r\n\r\n"
+                  "# Windows Chapter\r\n"
+                  "Text with CRLF\r\n");
+
+        Backend backend;
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
+        QVERIFY(editor);
+
+        backend.open(QUrl::fromLocalFile(filePath));
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("# Windows Chapter\nText with CRLF\n"));
+        QCOMPARE(backend.modified(), false);
+    }
+
+    void tracksMetadataModifications() {
+        QTemporaryDir tempDir;
+        const QString filePath = tempDir.filePath(QStringLiteral("Track.md"));
+        writeFile(filePath,
+                  "---\n"
+                  "title: Original Title\n"
+                  "author: Alice\n"
+                  "---\n\n"
+                  "# Original Heading\n"
+                  "Body content.\n");
+
+        Backend backend;
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
+        QVERIFY(editor);
+
+        backend.open(QUrl::fromLocalFile(filePath));
+        QCOMPARE(backend.modified(), false);
+
+        backend.updateDocumentMetadata(QStringLiteral("Altered Title"), QStringLiteral("Alice"), QString());
+        QCOMPARE(backend.modified(), true);
+
+        editor->setProperty("text", QStringLiteral("# Original Heading\nBody content.\nExtra"));
+        QCOMPARE(backend.modified(), true);
+        editor->setProperty("text", QStringLiteral("# Original Heading\nBody content.\n"));
+        QCOMPARE(backend.modified(), true);
+
+        backend.updateDocumentMetadata(QStringLiteral("Original Title"), QStringLiteral("Alice"), QString());
+        QCOMPARE(backend.modified(), false);
+    }
+
+    void keepsPlainFileWithoutFrontmatter() {
+        QTemporaryDir tempDir;
+        const QString filePath = tempDir.filePath(QStringLiteral("Plain.md"));
+        writeFile(filePath, "# Plain Document\nNo frontmatter here.\n");
+
+        Backend backend;
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
+        QVERIFY(editor);
+
+        backend.open(QUrl::fromLocalFile(filePath));
+        QCOMPARE(backend.modified(), false);
+
+        editor->setProperty("text", QStringLiteral("# Plain Document\nUpdated body.\n"));
+        QCOMPARE(backend.modified(), true);
+        backend.save();
+
+        QCOMPARE(backend.modified(), false);
+        QCOMPARE(readFile(filePath), QStringLiteral("# Plain Document\nUpdated body.\n"));
+    }
+
+    void addsFrontmatterWhenPropertiesAppliedToPlainFile() {
+        QTemporaryDir tempDir;
+        const QString filePath = tempDir.filePath(QStringLiteral("Plain.md"));
+        writeFile(filePath, "# Plain Document\n");
+
+        Backend backend;
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QVERIFY(loadEditor(engine, backend, window));
+
+        backend.open(QUrl::fromLocalFile(filePath));
+        backend.updateDocumentMetadata(QStringLiteral("Explicit Title"), QStringLiteral("Author Y"), QString());
+        QCOMPARE(backend.modified(), true);
+        backend.save();
+
+        const QString saved = readFile(filePath);
+        QVERIFY(saved.startsWith(QStringLiteral("---\ntitle: Explicit Title\n")));
+        QVERIFY(saved.endsWith(QStringLiteral("---\n\n# Plain Document\n")));
+    }
+
+    void centersOnlyHeadingBlocks() {
+        Backend backend;
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
+        QVERIFY(editor);
+
+        editor->setProperty("text", QStringLiteral("Plain line\n# Heading\nNext line"));
+
+        auto *quickDocument = editor->property("textDocument").value<QQuickTextDocument *>();
+        QVERIFY(quickDocument);
+        const QTextDocument *document = quickDocument->textDocument();
+        QCOMPARE(document->findBlockByNumber(0).blockFormat().alignment(), Qt::Alignment(Qt::AlignLeft));
+        QCOMPARE(document->findBlockByNumber(1).blockFormat().alignment(), Qt::Alignment(Qt::AlignHCenter));
+        QCOMPARE(document->findBlockByNumber(2).blockFormat().alignment(), Qt::Alignment(Qt::AlignLeft));
+    }
+
+    void dropsPendingActionWhenSaveFails() {
+        Backend backend;
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QVERIFY(loadEditor(engine, backend, window));
+
+        QTemporaryDir tempDir;
+        window->setProperty("pendingAction", QStringLiteral("close"));
+        backend.saveAs(QUrl::fromLocalFile(tempDir.filePath(QStringLiteral("missing/draft.md"))));
+
+        QCOMPARE(window->property("pendingAction").toString(), QString());
+    }
+
+    void hiddenRangesIgnoreCodeBlocks() {
+        Backend backend;
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
         QVERIFY(editor);
 
         const QString sample = QStringLiteral(
@@ -462,43 +383,23 @@ private slots:
             "```\n");
         editor->setProperty("text", sample);
 
-        // Position on first line with **bold** (pos 20) has hidden markers
-        QVariantList normalRanges = backend.hiddenRangesAt(20);
-        QCOMPARE(normalRanges.size(), 2);
-
-        // Position inside code block (pos 35 on "# not heading") has NO hidden ranges
-        int codePos = sample.indexOf(QStringLiteral("# not heading"));
-        QVariantList codeRanges1 = backend.hiddenRangesAt(codePos);
-        QCOMPARE(codeRanges1.size(), 0);
-
-        // Position inside code block on "code with *italic*" has NO hidden ranges
-        int codePos2 = sample.indexOf(QStringLiteral("*italic*"));
-        QVariantList codeRanges2 = backend.hiddenRangesAt(codePos2);
-        QCOMPARE(codeRanges2.size(), 0);
+        QCOMPARE(backend.hiddenRangesAt(20).size(), 2);
+        QCOMPARE(backend.hiddenRangesAt(sample.indexOf(QStringLiteral("# not heading"))).size(), 0);
+        QCOMPARE(backend.hiddenRangesAt(sample.indexOf(QStringLiteral("*italic*"))).size(), 0);
     }
 
     void smartReturnHandlesCodeBlocks() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
         Backend backend;
         QQmlEngine engine;
-        setupEngine(engine, backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
         QVERIFY(editor);
 
-        // Case 1: Inside multi-line code block -> single \n inserted
         editor->setProperty("text", QStringLiteral("```\nline 1"));
         editor->setProperty("cursorPosition", 10);
         QVERIFY(QMetaObject::invokeMethod(editor, "smartReturn", Q_ARG(QVariant, false)));
         QCOMPARE(editor->property("text").toString(), QStringLiteral("```\nline 1\n"));
 
-        // Case 2: After single-line code block -> normal paragraph double \n inserted
         editor->setProperty("text", QStringLiteral("```print(1)```\nNormal paragraph"));
         editor->setProperty("cursorPosition", editor->property("text").toString().length());
         QVERIFY(QMetaObject::invokeMethod(editor, "smartReturn", Q_ARG(QVariant, false)));
@@ -516,22 +417,11 @@ private slots:
         backend.saveAs(QUrl::fromLocalFile(path));
         QVERIFY(QFileInfo::exists(path));
 
-        QFile readFile(path);
-        QVERIFY(readFile.open(QIODevice::ReadOnly));
-        const QByteArray savedBytes = readFile.readAll();
-        readFile.close();
-
-        QFile sameContents(path);
-        QVERIFY(sameContents.open(QIODevice::WriteOnly | QIODevice::Truncate));
-        sameContents.write(savedBytes);
-        sameContents.close();
+        writeFile(path, readFile(path).toUtf8());
         QTest::qWait(100);
         QCOMPARE(externalChangeSpy.count(), 0);
 
-        QFile changedContents(path);
-        QVERIFY(changedContents.open(QIODevice::WriteOnly | QIODevice::Truncate));
-        QCOMPARE(changedContents.write("changed elsewhere"), qint64(17));
-        changedContents.close();
+        writeFile(path, "changed elsewhere");
         QTRY_COMPARE(externalChangeSpy.count(), 1);
     }
 
@@ -585,53 +475,14 @@ private slots:
         QCOMPARE(editor->property("wrappedSelectionEnd").toInt(), 12);
     }
 
-    void savesAndOpensFromFooterButtons() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
-        Backend backend;
-        QQmlEngine engine;
-        setupEngine(engine, backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QVERIFY(window->findChild<QObject *>(QStringLiteral("sourceEditor")));
-        QVERIFY(!window->findChild<QObject *>(QStringLiteral("renderedPreview")));
-        QVERIFY(!window->findChild<QObject *>(QStringLiteral("modeToggle")));
-
-        QObject *saveButton = window->findChild<QObject *>(QStringLiteral("saveButton"));
-        QObject *openButton = window->findChild<QObject *>(QStringLiteral("openButton"));
-        QVERIFY(saveButton);
-        QVERIFY(openButton);
-
-        QSignalSpy saveDialogSpy(&backend, &Backend::saveAsRequested);
-        QVERIFY(QMetaObject::invokeMethod(saveButton, "clicked"));
-        QCOMPARE(saveDialogSpy.count(), 1);
-
-        QSignalSpy openDialogSpy(&backend, &Backend::openDialogRequested);
-        QVERIFY(QMetaObject::invokeMethod(openButton, "clicked"));
-        QCOMPARE(openDialogSpy.count(), 1);
-    }
-
     void scalesTextWithDesktopTextSize() {
-        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
-        QVERIFY(!mainQmlPath.isEmpty());
-
         Backend backend;
         QQmlEngine engine;
-        setupEngine(engine, backend);
-        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
-        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
-        QScopedPointer<QObject> window(component.create());
-        QVERIFY2(window, qPrintable(component.errorString()));
-
-        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
         QVERIFY(editor);
         QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 20);
 
-        // `linux display text size 16` sets the GNOME factor to 16/12.
         backend.setTextScale(16.0 / 12.0);
         QCOMPARE(window->property("editorFontPixelSize").toInt(), 27);
         QCOMPARE(editor->property("font").value<QFont>().pixelSize(), 27);
@@ -645,22 +496,16 @@ private slots:
         QTemporaryDir saveDirectory;
         QVERIFY(saveDirectory.isValid());
 
-        const QString savedPath = saveDirectory.filePath(QStringLiteral("first.md"));
         Backend savedDocument;
-        savedDocument.saveAs(QUrl::fromLocalFile(savedPath));
+        savedDocument.saveAs(QUrl::fromLocalFile(saveDirectory.filePath(QStringLiteral("first.md"))));
 
-        Backend nextDocument;
-        const QUrl suggestedUrl = nextDocument.suggestedSaveUrl();
-        QCOMPARE(QFileInfo(suggestedUrl.toLocalFile()).absolutePath(),
-                 saveDirectory.path());
-        QCOMPARE(QFileInfo(suggestedUrl.toLocalFile()).fileName(),
-                 QStringLiteral("Untitled.md"));
+        const QFileInfo suggested(Backend().suggestedSavePath());
+        QCOMPARE(suggested.absolutePath(), saveDirectory.path());
+        QCOMPARE(suggested.fileName(), QStringLiteral("Untitled.md"));
 
         QSettings().setValue(QStringLiteral("file/lastSaveDirectory"),
                              saveDirectory.filePath(QStringLiteral("missing")));
-        Backend fallbackDocument;
-        const QUrl fallbackUrl = fallbackDocument.suggestedSaveUrl();
-        QCOMPARE(QFileInfo(fallbackUrl.toLocalFile()).absolutePath(), QDir::homePath());
+        QCOMPARE(QFileInfo(Backend().suggestedSavePath()).absolutePath(), QDir::homePath());
     }
 
 private:

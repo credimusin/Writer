@@ -75,7 +75,7 @@ Dialog {
                     Layout.fillWidth: true
                     text: "Properties"
                     color: root.strongTextColor
-                    font.family: "monospace"
+                    font.family: systemTheme.monospaceFamily
                     font.pixelSize: root.scaledSize(16)
                     font.bold: true
                 }
@@ -94,7 +94,7 @@ Dialog {
                 Label {
                     text: "TITLE"
                     color: root.mutedColor
-                    font.family: "monospace"
+                    font.family: systemTheme.monospaceFamily
                     font.pixelSize: root.scaledSize(11)
                     font.bold: true
                 }
@@ -116,7 +116,7 @@ Dialog {
                         color: root.textColor
                         selectionColor: root.selectionFill
                         selectedTextColor: root.strongTextColor
-                        font.family: "monospace"
+                        font.family: systemTheme.monospaceFamily
                         font.pixelSize: root.scaledSize(13)
                         clip: true
                         KeyNavigation.tab: authorField
@@ -141,7 +141,7 @@ Dialog {
                 Label {
                     text: "AUTHOR"
                     color: root.mutedColor
-                    font.family: "monospace"
+                    font.family: systemTheme.monospaceFamily
                     font.pixelSize: root.scaledSize(11)
                     font.bold: true
                 }
@@ -163,7 +163,7 @@ Dialog {
                         color: root.textColor
                         selectionColor: root.selectionFill
                         selectedTextColor: root.strongTextColor
-                        font.family: "monospace"
+                        font.family: systemTheme.monospaceFamily
                         font.pixelSize: root.scaledSize(13)
                         clip: true
                         KeyNavigation.tab: topicField
@@ -188,7 +188,7 @@ Dialog {
                 Label {
                     text: "TOPIC"
                     color: root.mutedColor
-                    font.family: "monospace"
+                    font.family: systemTheme.monospaceFamily
                     font.pixelSize: root.scaledSize(11)
                     font.bold: true
                 }
@@ -210,7 +210,7 @@ Dialog {
                         color: root.textColor
                         selectionColor: root.selectionFill
                         selectedTextColor: root.strongTextColor
-                        font.family: "monospace"
+                        font.family: systemTheme.monospaceFamily
                         font.pixelSize: root.scaledSize(13)
                         clip: true
                         KeyNavigation.tab: applyButton
@@ -234,7 +234,7 @@ Dialog {
                     Label {
                         text: "CREATED"
                         color: root.mutedColor
-                        font.family: "monospace"
+                        font.family: systemTheme.monospaceFamily
                         font.pixelSize: root.scaledSize(10)
                         font.bold: true
                     }
@@ -243,7 +243,7 @@ Dialog {
                         id: createdLabel
                         text: "-"
                         color: root.textColor
-                        font.family: "monospace"
+                        font.family: systemTheme.monospaceFamily
                         font.pixelSize: root.scaledSize(12)
                     }
                 }
@@ -255,7 +255,7 @@ Dialog {
                     Label {
                         text: "UPDATED"
                         color: root.mutedColor
-                        font.family: "monospace"
+                        font.family: systemTheme.monospaceFamily
                         font.pixelSize: root.scaledSize(10)
                         font.bold: true
                     }
@@ -264,7 +264,7 @@ Dialog {
                         id: updatedLabel
                         text: "-"
                         color: root.textColor
-                        font.family: "monospace"
+                        font.family: systemTheme.monospaceFamily
                         font.pixelSize: root.scaledSize(12)
                     }
                 }

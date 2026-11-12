@@ -5,6 +5,7 @@
 #include <QByteArray>
 #include <QFileSystemWatcher>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
@@ -16,7 +17,6 @@ class QLockFile;
 
 class Backend : public QObject {
     Q_OBJECT
-    Q_PROPERTY(QUrl fileUrl READ fileUrl NOTIFY fileUrlChanged)
     Q_PROPERTY(QString fileName READ fileName NOTIFY fileUrlChanged)
     Q_PROPERTY(bool modified READ modified NOTIFY modifiedChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
@@ -25,14 +25,12 @@ class Backend : public QObject {
     Q_PROPERTY(qreal textScale READ textScale WRITE setTextScale NOTIFY textScaleChanged)
     Q_PROPERTY(QString themeBackground READ themeBackground NOTIFY themeColorsChanged)
     Q_PROPERTY(QString themeForeground READ themeForeground NOTIFY themeColorsChanged)
-    Q_PROPERTY(QString themeAccent READ themeAccent NOTIFY themeColorsChanged)
-    Q_PROPERTY(QString themeSelection READ themeSelection NOTIFY themeColorsChanged)
+    Q_PROPERTY(QString themeAccent READ themeAccent CONSTANT)
 
 public:
     explicit Backend(QObject *parent = nullptr);
     ~Backend() override;
 
-    QUrl fileUrl() const { return m_fileUrl; }
     QString fileName() const;
 
     bool modified() const { return m_modified; }
@@ -45,27 +43,24 @@ public:
     QString themeBackground() const { return m_themeBackground; }
     QString themeForeground() const { return m_themeForeground; }
     QString themeAccent() const { return m_themeAccent; }
-    QString themeSelection() const { return m_themeSelection; }
     static int countWords(const QString &text);
     static QString normalizedLinkUrl(const QString &clipboardText);
     static QString suggestedFileName(const QString &text);
 
+    void open(const QUrl &url);
+    void saveAs(const QUrl &url);
+    QString suggestedSavePath() const;
+    QString defaultAuthor() const;
+    void setDefaultAuthor(const QString &author);
+
     Q_INVOKABLE void attachDocument(QObject *textDocument);
     Q_INVOKABLE void openDialog();
-    Q_INVOKABLE void open(const QUrl &url);
     Q_INVOKABLE void save();
-    Q_INVOKABLE void saveForClose();
     Q_INVOKABLE void saveAsDialog();
-    Q_INVOKABLE void saveAs(const QUrl &url);
-    Q_INVOKABLE QUrl suggestedSaveUrl() const;
-    Q_INVOKABLE void fileDialogCanceled();
     Q_INVOKABLE void discardRecovery();
     Q_INVOKABLE void reloadFromDisk();
     Q_INVOKABLE void keepExternalVersion();
     Q_INVOKABLE void exportPdfDialog();
-    Q_INVOKABLE void exportPdf(const QUrl &url);
-    Q_INVOKABLE QUrl suggestedPdfUrl() const;
-    Q_INVOKABLE QUrl suggestedFolder() const;
     Q_INVOKABLE void newWindow();
     Q_INVOKABLE QString clipboardUrl() const;
     Q_INVOKABLE QString clipboardText() const;
@@ -73,16 +68,11 @@ public:
     Q_INVOKABLE QVariantList hiddenRangesAt(int position) const;
     Q_INVOKABLE bool isInCodeBlock(int cursorPosition) const;
     Q_INVOKABLE void setSearchHighlight(const QString &query, int currentMatchStart);
-    Q_INVOKABLE void openExternalUrl(const QUrl &url);
     Q_INVOKABLE QVariantMap documentMetadata() const;
     Q_INVOKABLE void updateDocumentMetadata(const QString &title, const QString &author, const QString &topic);
-    Q_INVOKABLE QString defaultAuthor() const;
-    Q_INVOKABLE void setDefaultAuthor(const QString &author);
 
 signals:
-    void openDialogRequested();
-    void saveAsRequested();
-    void saveCanceled();
+    void saveFinished(bool saved);
     void fileUrlChanged();
     void modifiedChanged();
     void statusChanged();
@@ -90,8 +80,6 @@ signals:
     void darkModeChanged();
     void textScaleChanged();
     void themeColorsChanged();
-    void closeAfterSave();
-    void saveSucceeded();
     void externalChangeDetected(bool deleted, bool locallyModified);
 
 private:
@@ -99,7 +87,8 @@ private:
     void setFileUrl(const QUrl &url);
     void setModified(bool modified);
     void setStatus(const QString &status);
-    void saveTo(const QUrl &url);
+    void failSave(const QString &status);
+    void exportPdf(const QString &path);
 
     QString currentDocumentText() const;
     void setWordCount(int words);
@@ -111,7 +100,6 @@ private:
     void writeRecovery();
     void restoreRecovery();
     void clearRecovery();
-    QString recoveryPath() const;
     void watchCurrentFile();
     void updateModifiedState();
     QString serializeFileContent(const QString &bodyText) const;
@@ -124,7 +112,7 @@ private:
         QString topic;
         QString created;
         QString updated;
-        QList<QPair<QString, QString>> otherFields;
+        QStringList otherLines;
     };
 
     Metadata m_metadata;
@@ -136,9 +124,7 @@ private:
     bool m_darkMode = true;
     qreal m_textScale = 1.0;
     bool m_loading = false;
-    bool m_closeAfterSave = false;
     bool m_formattingTypography = false;
-    int m_formattedBlockCount = 0;
     int m_lastChangePos = 0;
     int m_lastChangeAdded = 0;
     QTimer m_wordCountTimer;
@@ -154,6 +140,5 @@ private:
 
     QString m_themeBackground = QStringLiteral("#fa101010");
     QString m_themeForeground = QStringLiteral("#f5f1e8");
-    QString m_themeAccent = QStringLiteral("#4a90e2");
-    QString m_themeSelection = QStringLiteral("#2c4a6b");
+    const QString m_themeAccent = QStringLiteral("#4a90e2");
 };

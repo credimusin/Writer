@@ -22,7 +22,7 @@ Button {
         color: control.labelColor
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment: Text.AlignVCenter
-        font.family: "monospace"
+        font.family: systemTheme.monospaceFamily
         font.pixelSize: Math.round(12 * control.textScale)
     }
 
