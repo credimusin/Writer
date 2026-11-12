@@ -12,7 +12,6 @@
 
 class MarkdownHighlighter;
 class QTextDocument;
-class QWindow;
 class QLockFile;
 
 class Backend : public QObject {
@@ -33,8 +32,6 @@ public:
     explicit Backend(QObject *parent = nullptr);
     ~Backend() override;
 
-    void setParentWindow(QWindow *window);
-
     QUrl fileUrl() const { return m_fileUrl; }
     QString fileName() const;
 
@@ -54,15 +51,18 @@ public:
     static QString suggestedFileName(const QString &text);
 
     Q_INVOKABLE void attachDocument(QObject *textDocument);
+    Q_INVOKABLE void openDialog();
     Q_INVOKABLE void open(const QUrl &url);
     Q_INVOKABLE void save();
     Q_INVOKABLE void saveForClose();
+    Q_INVOKABLE void saveAsDialog();
     Q_INVOKABLE void saveAs(const QUrl &url);
     Q_INVOKABLE QUrl suggestedSaveUrl() const;
     Q_INVOKABLE void fileDialogCanceled();
     Q_INVOKABLE void discardRecovery();
     Q_INVOKABLE void reloadFromDisk();
     Q_INVOKABLE void keepExternalVersion();
+    Q_INVOKABLE void exportPdfDialog();
     Q_INVOKABLE void exportPdf(const QUrl &url);
     Q_INVOKABLE QUrl suggestedPdfUrl() const;
     Q_INVOKABLE QUrl suggestedFolder() const;
@@ -80,7 +80,9 @@ public:
     Q_INVOKABLE void setDefaultAuthor(const QString &author);
 
 signals:
+    void openDialogRequested();
     void saveAsRequested();
+    void saveCanceled();
     void fileUrlChanged();
     void modifiedChanged();
     void statusChanged();
@@ -143,7 +145,6 @@ private:
     QTimer m_recoveryTimer;
     QFileSystemWatcher m_fileWatcher;
     QPointer<QTextDocument> m_document;
-    QPointer<QWindow> m_parentWindow;
     QPointer<MarkdownHighlighter> m_highlighter;
     QString m_lastDocumentText;
     QByteArray m_lastKnownFileContents;
@@ -155,5 +156,4 @@ private:
     QString m_themeForeground = QStringLiteral("#f5f1e8");
     QString m_themeAccent = QStringLiteral("#4a90e2");
     QString m_themeSelection = QStringLiteral("#2c4a6b");
-    QFileSystemWatcher m_themeWatcher;
 };

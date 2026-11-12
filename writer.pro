@@ -1,4 +1,7 @@
-QT += core gui widgets printsupport qml quick quickcontrols2 dbus
+QT += core gui widgets printsupport qml quick quickcontrols2
+unix:!macx {
+    QT += dbus
+}
 
 CONFIG += c++17 release
 TARGET = writer

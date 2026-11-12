@@ -11,7 +11,6 @@
 #include <QGuiApplication>
 #include <QMimeData>
 #include <QProcess>
-#include <QPrintDialog>
 #include <QPrinter>
 #include <QQuickTextDocument>
 #include <QRegularExpression>
@@ -30,7 +29,6 @@
 #include <QTextStream>
 #include <QUrl>
 #include <QVariantMap>
-#include <QWindow>
 
 #include <algorithm>
 
@@ -181,17 +179,9 @@ Backend::Backend(QObject *parent) : QObject(parent) {
 
                 emit externalChangeDetected(deleted, m_modified);
             });
-    connect(&m_themeWatcher, &QFileSystemWatcher::fileChanged, this, [this]() {
-    });
-    connect(&m_themeWatcher, &QFileSystemWatcher::directoryChanged, this, [this]() {
-    });
 }
 
 Backend::~Backend() = default;
-
-void Backend::setParentWindow(QWindow *window) {
-    m_parentWindow = window;
-}
 
 QString Backend::fileName() const {
     if (!m_fileUrl.isValid() || m_fileUrl.isEmpty())
@@ -272,6 +262,21 @@ void Backend::attachDocument(QObject *textDocument) {
     }
 }
 
+void Backend::openDialog() {
+    emit openDialogRequested();
+    if (QGuiApplication::platformName() == QLatin1String("offscreen"))
+        return;
+
+    const QString fileName = QFileDialog::getOpenFileName(
+        nullptr,
+        QStringLiteral("Open File"),
+        suggestedFolder().toLocalFile(),
+        QStringLiteral("Markdown files (*.md *.markdown);;All files (*)")
+    );
+    if (!fileName.isEmpty())
+        open(QUrl::fromLocalFile(fileName));
+}
+
 void Backend::open(const QUrl &url) {
     if (!url.isLocalFile()) {
         setStatus(QStringLiteral("Only local files can be opened."));
@@ -330,7 +335,7 @@ void Backend::open(const QUrl &url) {
 
 void Backend::save() {
     if (!m_fileUrl.isValid() || m_fileUrl.isEmpty()) {
-        emit saveAsRequested();
+        saveAsDialog();
         return;
     }
 
@@ -347,12 +352,31 @@ void Backend::saveForClose() {
     save();
 }
 
+void Backend::saveAsDialog() {
+    emit saveAsRequested();
+    if (QGuiApplication::platformName() == QLatin1String("offscreen"))
+        return;
+
+    const QString fileName = QFileDialog::getSaveFileName(
+        nullptr,
+        QStringLiteral("Save File"),
+        suggestedSaveUrl().toLocalFile(),
+        QStringLiteral("Markdown files (*.md *.markdown);;All files (*)")
+    );
+    if (!fileName.isEmpty()) {
+        saveAs(QUrl::fromLocalFile(fileName));
+    } else {
+        fileDialogCanceled();
+    }
+}
+
 void Backend::saveAs(const QUrl &url) {
     saveTo(url);
 }
 
 void Backend::fileDialogCanceled() {
     m_closeAfterSave = false;
+    emit saveCanceled();
 }
 
 void Backend::discardRecovery() {
@@ -377,6 +401,20 @@ void Backend::keepExternalVersion() {
     scheduleRecovery();
     watchCurrentFile();
     setStatus(QStringLiteral("Kept your version"));
+}
+
+void Backend::exportPdfDialog() {
+    if (QGuiApplication::platformName() == QLatin1String("offscreen"))
+        return;
+
+    const QString fileName = QFileDialog::getSaveFileName(
+        nullptr,
+        QStringLiteral("Export PDF"),
+        suggestedPdfUrl().toLocalFile(),
+        QStringLiteral("PDF files (*.pdf);;All files (*)")
+    );
+    if (!fileName.isEmpty())
+        exportPdf(QUrl::fromLocalFile(fileName));
 }
 
 void Backend::exportPdf(const QUrl &url) {
@@ -540,12 +578,15 @@ void Backend::updateModifiedState() {
 
         const bool textMatches = (currentNormalized == diskBody);
         bool metaMatches = true;
-        if (info.hasFrontmatter != m_metadata.hasMetadata
-                || info.title != m_metadata.title
-                || (info.author.isEmpty() ? defaultAuthor() : info.author) != m_metadata.author
-                || info.topic != m_metadata.topic
-                || info.otherFields != m_metadata.otherFields) {
+        if (info.hasFrontmatter != m_metadata.hasMetadata) {
             metaMatches = false;
+        } else if (m_metadata.hasMetadata) {
+            if (info.title != m_metadata.title
+                    || (info.author.isEmpty() ? defaultAuthor() : info.author) != m_metadata.author
+                    || info.topic != m_metadata.topic
+                    || info.otherFields != m_metadata.otherFields) {
+                metaMatches = false;
+            }
         }
 
         if (textMatches && metaMatches) {
@@ -704,31 +745,36 @@ void Backend::saveTo(const QUrl &url) {
         localPath += QStringLiteral(".md");
     }
     const QString targetName = QFileInfo(localPath).fileName();
-    const QString fileBaseName = QFileInfo(localPath).completeBaseName();
-    const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
 
-    if (m_metadata.title.trimmed().isEmpty()) {
-        QString body = currentDocumentText();
-        QString firstLine = body.section(QLatin1Char('\n'), 0, 0).trimmed();
-        if (firstLine.startsWith(QLatin1Char('#'))) {
-            firstLine = firstLine.remove(QRegularExpression(QStringLiteral("^#+\\s*"))).trimmed();
-        }
-        if (!firstLine.isEmpty()) {
-            m_metadata.title = firstLine.left(100);
-        } else if (fileBaseName != QStringLiteral("Untitled")) {
-            m_metadata.title = fileBaseName;
-        }
-    }
-    if (m_metadata.author.isEmpty()) {
-        m_metadata.author = defaultAuthor();
-    }
-    if (m_metadata.created.isEmpty()) {
-        m_metadata.created = now;
-    }
-    m_metadata.updated = now;
-    m_metadata.hasMetadata = true;
+    QString fileContent;
+    if (m_metadata.hasMetadata) {
+        const QString fileBaseName = QFileInfo(localPath).completeBaseName();
+        const QString now = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm"));
 
-    const QString fileContent = serializeFileContent(currentDocumentText());
+        if (m_metadata.title.trimmed().isEmpty()) {
+            QString body = currentDocumentText();
+            QString firstLine = body.section(QLatin1Char('\n'), 0, 0).trimmed();
+            if (firstLine.startsWith(QLatin1Char('#'))) {
+                firstLine = firstLine.remove(QRegularExpression(QStringLiteral("^#+\\s*"))).trimmed();
+            }
+            if (!firstLine.isEmpty()) {
+                m_metadata.title = firstLine.left(100);
+            } else if (fileBaseName != QStringLiteral("Untitled")) {
+                m_metadata.title = fileBaseName;
+            }
+        }
+        if (m_metadata.author.isEmpty()) {
+            m_metadata.author = defaultAuthor();
+        }
+        if (m_metadata.created.isEmpty()) {
+            m_metadata.created = now;
+        }
+        m_metadata.updated = now;
+
+        fileContent = serializeFileContent(currentDocumentText());
+    } else {
+        fileContent = currentDocumentText();
+    }
 
     QUrl finalUrl = QUrl::fromLocalFile(localPath);
     QSaveFile file(localPath);

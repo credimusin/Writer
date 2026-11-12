@@ -7,14 +7,24 @@
 
 #include "backend.h"
 #include "markdownhighlighter.h"
+#include "systemtheme.h"
 
 class WriterTest : public QObject {
     Q_OBJECT
 
+private:
+    void setupEngine(QQmlEngine &engine, Backend &backend) {
+        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        engine.rootContext()->setContextProperty(QStringLiteral("systemTheme"), &m_systemTheme);
+    }
+
 private slots:
     void initTestCase() {
         QVERIFY(m_settingsDirectory.isValid());
-        QQuickStyle::setStyle(QStringLiteral("Material"));
+        QCoreApplication::setOrganizationName(QStringLiteral("writer"));
+        QCoreApplication::setOrganizationDomain(QStringLiteral("writer.local"));
+        QCoreApplication::setApplicationName(QStringLiteral("writer"));
+        QQuickStyle::setStyle(QStringLiteral("Basic"));
         QSettings::setDefaultFormat(QSettings::IniFormat);
         QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                            m_settingsDirectory.path());
@@ -104,7 +114,7 @@ private slots:
 
         Backend backend;
         QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        setupEngine(engine, backend);
         QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> window(component.create());
@@ -152,7 +162,7 @@ private slots:
         Backend backend;
         backend.setDefaultAuthor(QStringLiteral("Auto Author"));
         QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        setupEngine(engine, backend);
         QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> window(component.create());
@@ -225,7 +235,7 @@ private slots:
 
         Backend backend;
         QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        setupEngine(engine, backend);
         QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> window(component.create());
@@ -267,7 +277,7 @@ private slots:
 
         Backend backend;
         QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        setupEngine(engine, backend);
         QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> window(component.create());
@@ -302,7 +312,7 @@ private slots:
 
         Backend backend;
         QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        setupEngine(engine, backend);
         QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> window(component.create());
@@ -326,6 +336,60 @@ private slots:
         // Reverting metadata to original restores unmodified state
         backend.updateDocumentMetadata(QStringLiteral("Original Title"), QStringLiteral("Alice"), QString());
         QCOMPARE(backend.modified(), false);
+    }
+
+    void preservesExistingFileWithoutFrontmatter() {
+        const QString mainQmlPath = QFINDTESTDATA("../src/Main.qml");
+        QVERIFY(!mainQmlPath.isEmpty());
+
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+        const QString filePath = tempDir.filePath(QStringLiteral("Plain.md"));
+
+        QFile initFile(filePath);
+        QVERIFY(initFile.open(QIODevice::WriteOnly | QIODevice::Text));
+        initFile.write("# Plain Document\nNo frontmatter here.\n");
+        initFile.close();
+
+        Backend backend;
+        QQmlEngine engine;
+        setupEngine(engine, backend);
+        QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        QScopedPointer<QObject> window(component.create());
+        QVERIFY2(window, qPrintable(component.errorString()));
+
+        backend.open(QUrl::fromLocalFile(filePath));
+        QCOMPARE(backend.modified(), false);
+
+        QObject *editor = window->findChild<QObject *>(QStringLiteral("sourceEditor"));
+        QVERIFY(editor);
+        QCOMPARE(editor->property("text").toString(), QStringLiteral("# Plain Document\nNo frontmatter here.\n"));
+
+        editor->setProperty("text", QStringLiteral("# Plain Document\nUpdated body without frontmatter.\n"));
+        QCOMPARE(backend.modified(), true);
+
+        backend.save();
+        QCOMPARE(backend.modified(), false);
+
+        QFile savedFile(filePath);
+        QVERIFY(savedFile.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString savedContent = QString::fromUtf8(savedFile.readAll());
+        savedFile.close();
+        QCOMPARE(savedContent, QStringLiteral("# Plain Document\nUpdated body without frontmatter.\n"));
+        QVERIFY(!savedContent.startsWith(QStringLiteral("---\n")));
+
+        // Explicitly applying metadata via updateDocumentMetadata enables frontmatter on next save
+        backend.updateDocumentMetadata(QStringLiteral("Explicit Title"), QStringLiteral("Author Y"), QStringLiteral("Notes"));
+        QCOMPARE(backend.modified(), true);
+        backend.save();
+
+        QVERIFY(savedFile.open(QIODevice::ReadOnly | QIODevice::Text));
+        const QString savedWithMeta = QString::fromUtf8(savedFile.readAll());
+        savedFile.close();
+        QVERIFY(savedWithMeta.startsWith(QStringLiteral("---\n")));
+        QVERIFY(savedWithMeta.contains(QStringLiteral("title: Explicit Title")));
+        QVERIFY(savedWithMeta.endsWith(QStringLiteral("# Plain Document\nUpdated body without frontmatter.\n")));
     }
 
     void ignoresFormattingInsideInlineCode() {
@@ -381,7 +445,7 @@ private slots:
 
         Backend backend;
         QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        setupEngine(engine, backend);
         QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> window(component.create());
@@ -419,7 +483,7 @@ private slots:
 
         Backend backend;
         QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        setupEngine(engine, backend);
         QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> window(component.create());
@@ -527,7 +591,7 @@ private slots:
 
         Backend backend;
         QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        setupEngine(engine, backend);
         QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> window(component.create());
@@ -546,13 +610,9 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(saveButton, "clicked"));
         QCOMPARE(saveDialogSpy.count(), 1);
 
-        QObject *openDialog = window->findChild<QObject *>(QStringLiteral("openDialog"));
-        if (openDialog) {
-            QVERIFY(QMetaObject::invokeMethod(openButton, "clicked"));
-            QCOMPARE(openDialog->property("visible").toBool(), true);
-        } else {
-            QVERIFY(QMetaObject::invokeMethod(openButton, "clicked"));
-        }
+        QSignalSpy openDialogSpy(&backend, &Backend::openDialogRequested);
+        QVERIFY(QMetaObject::invokeMethod(openButton, "clicked"));
+        QCOMPARE(openDialogSpy.count(), 1);
     }
 
     void scalesTextWithDesktopTextSize() {
@@ -561,7 +621,7 @@ private slots:
 
         Backend backend;
         QQmlEngine engine;
-        engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
+        setupEngine(engine, backend);
         QQmlComponent component(&engine, QUrl::fromLocalFile(mainQmlPath));
         QVERIFY2(component.isReady(), qPrintable(component.errorString()));
         QScopedPointer<QObject> window(component.create());
@@ -605,6 +665,7 @@ private slots:
 
 private:
     QTemporaryDir m_settingsDirectory;
+    SystemTheme m_systemTheme;
 };
 
 QTEST_MAIN(WriterTest)

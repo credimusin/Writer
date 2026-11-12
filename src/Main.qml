@@ -1,10 +1,8 @@
 import QtCore
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Controls.Material
 import QtQuick.Layouts
 import QtQuick.Window
-import QtQuick.Dialogs
 import "EditorMutations.js" as EditorMutations
 
 ApplicationWindow {
@@ -39,8 +37,6 @@ ApplicationWindow {
     property string pendingAction: ""
     property bool awaitingPendingSave: false
 
-    Material.theme: darkMode ? Material.Dark : Material.Light
-    Material.accent: backend.themeAccent
     color: "transparent"
 
     onClosing: function(close) {
@@ -68,21 +64,16 @@ ApplicationWindow {
             win.pendingAction = "openDialog";
             unsavedChangesDialog.open();
         } else {
-            openDialog.currentFolder = backend.suggestedFolder();
-            openDialog.open();
+            backend.openDialog();
         }
     }
 
     function saveFilePrompt() {
-        saveDialog.currentFolder = backend.suggestedFolder();
-        saveDialog.currentFile = backend.suggestedSaveUrl();
-        saveDialog.open();
+        backend.saveAsDialog();
     }
 
     function exportPdfPrompt() {
-        exportPdfDialog.currentFolder = backend.suggestedFolder();
-        exportPdfDialog.currentFile = backend.suggestedPdfUrl();
-        exportPdfDialog.open();
+        backend.exportPdfDialog();
     }
 
     function openMetadataPrompt() {
@@ -100,8 +91,7 @@ ApplicationWindow {
         } else if (action === "open") {
             backend.open(pendingOpenUrl);
         } else if (action === "openDialog") {
-            openDialog.currentFolder = backend.suggestedFolder();
-            openDialog.open();
+            backend.openDialog();
         }
     }
 
@@ -253,7 +243,7 @@ ApplicationWindow {
     }
 
     Shortcut {
-        sequence: "Ctrl+P"
+        sequences: [StandardKey.Print]
         context: Qt.ApplicationShortcut
         onActivated: win.exportPdfPrompt()
     }
@@ -313,6 +303,11 @@ ApplicationWindow {
                 win.completePendingAction();
         }
 
+        function onSaveCanceled() {
+            win.awaitingPendingSave = false;
+            win.pendingAction = "";
+        }
+
         function onExternalChangeDetected(deleted, locallyModified) {
             externalChangeDialog.deleted = deleted;
             externalChangeDialog.locallyModified = locallyModified;
@@ -354,58 +349,6 @@ ApplicationWindow {
 
         onKeepRequested: backend.keepExternalVersion()
         onReloadRequested: backend.reloadFromDisk()
-    }
-
-    Connections {
-        target: backend
-        function onSaveAsRequested() {
-            win.saveFilePrompt();
-        }
-    }
-
-    FileDialog {
-        id: openDialog
-        objectName: "openDialog"
-        parentWindow: win
-        popupType: Popup.Item
-        title: "Open File"
-        nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
-        onAccepted: {
-            if (selectedFile !== "")
-                backend.open(selectedFile);
-        }
-    }
-
-    FileDialog {
-        id: saveDialog
-        objectName: "saveDialog"
-        parentWindow: win
-        popupType: Popup.Item
-        title: "Save File"
-        fileMode: FileDialog.SaveFile
-        nameFilters: ["Markdown files (*.md *.markdown)", "All files (*)"]
-        onAccepted: {
-            if (selectedFile !== "")
-                backend.saveAs(selectedFile);
-        }
-        onRejected: {
-            backend.fileDialogCanceled();
-            win.awaitingPendingSave = false;
-            win.pendingAction = "";
-        }
-    }
-
-    FileDialog {
-        id: exportPdfDialog
-        parentWindow: win
-        popupType: Popup.Item
-        title: "Export PDF"
-        fileMode: FileDialog.SaveFile
-        nameFilters: ["PDF files (*.pdf)", "All files (*)"]
-        onAccepted: {
-            if (selectedFile !== "")
-                backend.exportPdf(selectedFile);
-        }
     }
 
     MetadataDialog {
@@ -754,9 +697,7 @@ ApplicationWindow {
 
                 Keys.priority: Keys.BeforeItem
                 Keys.onPressed: function(event) {
-                    var pasteKey = (event.key === Qt.Key_V)
-                        && (event.modifiers & Qt.ControlModifier)
-                        && !(event.modifiers & (Qt.AltModifier | Qt.MetaModifier | Qt.ShiftModifier));
+                    var pasteKey = event.matches(StandardKey.Paste);
                     var shiftInsert = (event.key === Qt.Key_Insert)
                         && (event.modifiers & Qt.ShiftModifier)
                         && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier));

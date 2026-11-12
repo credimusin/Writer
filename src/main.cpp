@@ -7,7 +7,6 @@
 #include <QQmlError>
 #include <QQuickStyle>
 #include <QUrl>
-#include <QWindow>
 #include <QFile>
 #include <QSurfaceFormat>
 
@@ -15,14 +14,16 @@
 #include "systemtheme.h"
 
 int main(int argc, char *argv[]) {
+#if defined(Q_OS_LINUX)
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORMTHEME")) {
         qputenv("QT_QPA_PLATFORMTHEME", "xdgdesktopportal");
     }
-    
+#endif
+
     QSurfaceFormat format;
     format.setAlphaBufferSize(8);
     QSurfaceFormat::setDefaultFormat(format);
-    
+
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("writer"));
     app.setDesktopFileName(QStringLiteral("dev.imaginal.writer"));
@@ -32,7 +33,7 @@ int main(int argc, char *argv[]) {
     app.setOrganizationName(QStringLiteral("writer"));
     app.setOrganizationDomain(QStringLiteral("writer.local"));
 
-    QQuickStyle::setStyle(QStringLiteral("Material"));
+    QQuickStyle::setStyle(QStringLiteral("Basic"));
 
     Backend backend(&app);
     SystemTheme systemTheme(&app);
@@ -72,8 +73,6 @@ int main(int argc, char *argv[]) {
                     << QFile::exists(QStringLiteral(":/Main.qml"));
         return -1;
     }
-
-    backend.setParentWindow(qobject_cast<QWindow *>(engine.rootObjects().constFirst()));
 
     const QStringList args = app.arguments();
     if (args.size() > 1 && !backend.modified())

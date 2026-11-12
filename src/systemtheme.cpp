@@ -1,13 +1,16 @@
 #include "systemtheme.h"
 
+#if defined(Q_OS_LINUX)
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusReply>
 #include <QDBusVariant>
+#endif
 #include <QGuiApplication>
 #include <QStyleHints>
 #include <QVariant>
 
+#if defined(Q_OS_LINUX)
 namespace {
 QVariant unwrapVariant(QVariant value) {
     while (value.canConvert<QDBusVariant>())
@@ -50,6 +53,7 @@ QVariant portalSetting(const QString &nameSpace, const QString &key) {
     return reply.value().variant();
 }
 }
+#endif
 
 SystemTheme::SystemTheme(QObject *parent) : QObject(parent) {
     m_darkMode = detectDarkMode();
@@ -60,6 +64,7 @@ SystemTheme::SystemTheme(QObject *parent) : QObject(parent) {
                 this, &SystemTheme::refresh);
     }
 
+#if defined(Q_OS_LINUX)
     QDBusConnection::sessionBus().connect(
         QString(),
         QStringLiteral("/org/freedesktop/portal/desktop"),
@@ -67,6 +72,7 @@ SystemTheme::SystemTheme(QObject *parent) : QObject(parent) {
         QStringLiteral("SettingChanged"),
         this,
         SLOT(handlePortalSettingChanged(QString,QString,QDBusVariant)));
+#endif
 }
 
 void SystemTheme::refresh() {
@@ -74,6 +80,7 @@ void SystemTheme::refresh() {
     setTextScale(detectTextScale());
 }
 
+#if defined(Q_OS_LINUX)
 void SystemTheme::handlePortalSettingChanged(const QString &nameSpace, const QString &key,
                                              const QDBusVariant &value) {
     if (key == QStringLiteral("text-scaling-factor")) {
@@ -87,6 +94,7 @@ void SystemTheme::handlePortalSettingChanged(const QString &nameSpace, const QSt
         return;
     }
 }
+#endif
 
 bool SystemTheme::detectDarkMode() const {
     bool known = false;
@@ -99,6 +107,7 @@ bool SystemTheme::detectDarkMode() const {
 }
 
 qreal SystemTheme::detectTextScale() const {
+#if defined(Q_OS_LINUX)
     const QVariant factor = portalSetting(QStringLiteral("org.gnome.desktop.interface"),
                                           QStringLiteral("text-scaling-factor"));
     if (!factor.isValid())
@@ -106,6 +115,9 @@ qreal SystemTheme::detectTextScale() const {
 
     bool known = false;
     return sanitizedTextScale(factor, &known);
+#else
+    return 1.0;
+#endif
 }
 
 bool SystemTheme::qtDarkMode(bool *known) const {
