@@ -1,5 +1,5 @@
 QT += core gui quick testlib widgets printsupport quickcontrols2
-unix:!macx {
+linux {
     QT += dbus
 }
 CONFIG += testcase c++17

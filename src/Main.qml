@@ -19,10 +19,7 @@ ApplicationWindow {
     readonly property color textColor: backend.themeForeground
     readonly property color strongTextColor: backend.themeForeground
     readonly property color mutedColor: darkMode ? "#909191" : "#aeb1b5"
-    readonly property color selectionFill: backend.themeSelection
-    // The desktop's text size knob (GNOME's text-scaling-factor, which
-    // `linux display text size` drives) anchored so its 12px default leaves
-    // the app at the sizes it was designed around.
+    readonly property color selectionFill: backend.themeAccent
     readonly property real textScale: backend.textScale
     readonly property int editorFontPixelSize: scaledSize(20)
     readonly property int editorWidth: Math.min(
@@ -33,9 +30,7 @@ ApplicationWindow {
     property bool searchUpdating: false
     property var searchMatches: []
     property int searchMatchIndex: -1
-    property url pendingOpenUrl
     property string pendingAction: ""
-    property bool awaitingPendingSave: false
 
     color: "transparent"
 
@@ -47,16 +42,6 @@ ApplicationWindow {
         pendingAction = "close";
         if (!unsavedChangesDialog.opened)
             unsavedChangesDialog.open();
-    }
-
-    function requestOpen(url) {
-        if (!backend.modified) {
-            backend.open(url);
-            return;
-        }
-        pendingOpenUrl = url;
-        pendingAction = "open";
-        unsavedChangesDialog.open();
     }
 
     function openFilePrompt() {
@@ -88,8 +73,6 @@ ApplicationWindow {
         if (action === "close") {
             closeConfirmed = true;
             close();
-        } else if (action === "open") {
-            backend.open(pendingOpenUrl);
         } else if (action === "openDialog") {
             backend.openDialog();
         }
@@ -97,7 +80,7 @@ ApplicationWindow {
 
     FontMetrics {
         id: writerFontMetrics
-        font.family: "monospace"
+        font.family: systemTheme.monospaceFamily
         font.pixelSize: win.editorFontPixelSize
     }
 
@@ -238,7 +221,8 @@ ApplicationWindow {
         sequences: ["Ctrl+T"]
         context: Qt.ApplicationShortcut
         onActivated: {
-            appearanceSettings.themeMode = (win.darkMode ? 1 : 2);
+            var wantDark = !win.darkMode;
+            appearanceSettings.themeMode = wantDark === systemTheme.darkMode ? 0 : (wantDark ? 2 : 1);
         }
     }
 
@@ -292,20 +276,11 @@ ApplicationWindow {
     Connections {
         target: backend
 
-        function onCloseAfterSave() {
-            win.closeConfirmed = true;
-            win.close();
-        }
-
-        function onSaveSucceeded() {
-            win.awaitingPendingSave = false;
-            if (win.pendingAction !== "")
+        function onSaveFinished(saved) {
+            if (saved)
                 win.completePendingAction();
-        }
-
-        function onSaveCanceled() {
-            win.awaitingPendingSave = false;
-            win.pendingAction = "";
+            else
+                win.pendingAction = "";
         }
 
         function onExternalChangeDetected(deleted, locallyModified) {
@@ -331,10 +306,7 @@ ApplicationWindow {
             win.completePendingAction();
         }
 
-        onSaveRequested: {
-            win.awaitingPendingSave = true;
-            backend.save();
-        }
+        onSaveRequested: backend.save()
         onCancelRequested: win.pendingAction = ""
     }
 
@@ -395,7 +367,7 @@ ApplicationWindow {
                 Label {
                     text: "Keyboard shortcuts"
                     color: win.strongTextColor
-                    font.family: "monospace"
+                    font.family: systemTheme.monospaceFamily
                     font.pixelSize: win.scaledSize(16)
                     font.bold: true
                 }
@@ -404,7 +376,7 @@ ApplicationWindow {
                     text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+M          Properties\nCtrl+P          Export PDF\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nCtrl+H          Cycle Heading\nCtrl+Shift+H    Clear Heading\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
                     lineHeight: 1.5
                     color: win.textColor
-                    font.family: "monospace"
+                    font.family: systemTheme.monospaceFamily
                     font.pixelSize: win.scaledSize(13)
                 }
             }
@@ -479,7 +451,7 @@ ApplicationWindow {
                 color: win.textColor
                 selectedTextColor: win.strongTextColor
                 selectionColor: win.selectionFill
-                font.family: "monospace"
+                font.family: systemTheme.monospaceFamily
                 font.pixelSize: win.editorFontPixelSize
                 font.weight: Font.Normal
                 // Native rendering hints glyphs to the pixel grid, which is
@@ -832,7 +804,7 @@ ApplicationWindow {
             Label {
                 text: backend.status
                 color: win.mutedColor
-                font.family: "monospace"
+                font.family: systemTheme.monospaceFamily
                 font.pixelSize: win.scaledSize(11)
                 visible: text !== ""
                 elide: Text.ElideRight
@@ -848,7 +820,7 @@ ApplicationWindow {
             anchors.bottomMargin: 4
             text: saveBtn.hovered ? "Save" : (openBtn.hovered ? "Open" : "")
             color: win.mutedColor
-            font.family: "monospace"
+            font.family: systemTheme.monospaceFamily
             font.pixelSize: 12
             font.weight: Font.Bold
             visible: text !== ""
@@ -862,7 +834,7 @@ ApplicationWindow {
             text: backend.wordCount + (backend.wordCount === 1 ? " Word" : " Words")
             color: win.mutedColor
             opacity: 0.75
-            font.family: "monospace"
+            font.family: systemTheme.monospaceFamily
             font.pixelSize: win.scaledSize(11)
         }
 
@@ -898,7 +870,7 @@ ApplicationWindow {
                     selectionColor: win.selectionFill
                     selectedTextColor: win.strongTextColor
                     font.pixelSize: win.scaledSize(15)
-                    font.family: "monospace"
+                    font.family: systemTheme.monospaceFamily
                     clip: true
                     onTextChanged: win.updateSearch()
                     Keys.onReturnPressed: function(event) {
@@ -916,7 +888,7 @@ ApplicationWindow {
                         visible: searchField.text.length === 0
                         color: win.mutedColor
                         font.pixelSize: win.scaledSize(15)
-                        font.family: "monospace"
+                        font.family: systemTheme.monospaceFamily
                     }
                 }
 
@@ -927,7 +899,7 @@ ApplicationWindow {
                         : (win.searchMatchIndex + 1) + "/" + win.searchMatches.length
                     color: win.mutedColor
                     font.pixelSize: win.scaledSize(14)
-                    font.family: "monospace"
+                    font.family: systemTheme.monospaceFamily
                 }
             }
         }
@@ -946,7 +918,7 @@ ApplicationWindow {
     Settings {
         id: appearanceSettings
         category: "appearance"
-        property int themeMode: 1 // 0 = system, 1 = light, 2 = dark
+        property int themeMode: 0 // 0 = system, 1 = light, 2 = dark
     }
 
     property bool effectiveDarkMode: {

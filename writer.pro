@@ -1,5 +1,5 @@
 QT += core gui widgets printsupport qml quick quickcontrols2
-unix:!macx {
+linux {
     QT += dbus
 }
 

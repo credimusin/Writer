@@ -6,6 +6,7 @@
 #include <QDBusReply>
 #include <QDBusVariant>
 #endif
+#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QStyleHints>
 #include <QVariant>
@@ -18,9 +19,8 @@ QVariant unwrapVariant(QVariant value) {
     return value;
 }
 
-// GNOME's text-scaling-factor is the desktop-wide "apparent text size" knob;
-// linux drives it from `linux display text size`, anchored so the default
-// 12px maps to 1.0. Ignore nonsense values and cap the range GNOME allows.
+// GNOME's text-scaling-factor is the desktop-wide "apparent text size" knob.
+// Ignore nonsense values and cap the range GNOME allows.
 qreal sanitizedTextScale(const QVariant &value, bool *known) {
     bool ok = false;
     const qreal scale = unwrapVariant(value).toDouble(&ok);
@@ -73,6 +73,10 @@ SystemTheme::SystemTheme(QObject *parent) : QObject(parent) {
         this,
         SLOT(handlePortalSettingChanged(QString,QString,QDBusVariant)));
 #endif
+}
+
+QString SystemTheme::monospaceFamily() const {
+    return QFontDatabase::systemFont(QFontDatabase::FixedFont).family();
 }
 
 void SystemTheme::refresh() {

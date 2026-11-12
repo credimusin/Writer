@@ -28,8 +28,6 @@ int main(int argc, char *argv[]) {
     app.setApplicationName(QStringLiteral("writer"));
     app.setDesktopFileName(QStringLiteral("dev.imaginal.writer"));
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("writer")));
-
-
     app.setOrganizationName(QStringLiteral("writer"));
     app.setOrganizationDomain(QStringLiteral("writer.local"));
 
@@ -40,7 +38,7 @@ int main(int argc, char *argv[]) {
 
     // Carry the desktop's text scale into the default font, so the chrome that
     // inherits it (dialog titles, buttons) grows along with the writing area.
-    const QFont interfaceFont(QStringLiteral("monospace"));
+    const QFont interfaceFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
     const qreal basePointSize = interfaceFont.pointSizeF() > 0
         ? interfaceFont.pointSizeF()
         : app.font().pointSizeF();

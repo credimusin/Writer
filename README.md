@@ -11,7 +11,7 @@ To build the project locally, ensure you have Qt 6 (`qt6-base`, `qt6-declarative
 ./bin/build
 ```
 
-This will compile the application and place the executable at `build/writer`. You can launch it directly:
+This will compile the application and place the executable at `build/writer` (`build/writer.app` on macOS). You can launch it directly:
 
 ```sh
 ./build/writer
@@ -26,6 +26,8 @@ To install Writer system-wide (requires sudo privileges):
 ```
 
 ## Shortcuts
+
+On macOS, `Ctrl` means `Cmd`.
 
 - `Ctrl+S` saves the document.
 - `Ctrl+Shift+S` saves as.
@@ -51,14 +53,12 @@ Writer automatically hides markdown syntax characters (like asterisks, underscor
 Unsaved drafts are recovered after an abnormal exit. Writer also watches open files
 and warns before an external change can replace local work.
 
-Text follows the desktop text size — `linux display text size`, or GNOME's
-`text-scaling-factor` — and re-flows without a restart. The default of 12px leaves
-Writer at the size it is designed around; larger and smaller sizes scale from there.
+On Linux, text follows GNOME's `text-scaling-factor` and re-flows without a restart.
 
 ## Requirements
 
 - Qt 6: `qt6-base`, `qt6-declarative`, `qt6-quickcontrols2`
-- `xdg-desktop-portal` and a portal backend
+- Linux: `xdg-desktop-portal` and a portal backend
 
 
 ---

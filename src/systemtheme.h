@@ -10,12 +10,14 @@ class SystemTheme : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool darkMode READ darkMode NOTIFY darkModeChanged)
     Q_PROPERTY(qreal textScale READ textScale NOTIFY textScaleChanged)
+    Q_PROPERTY(QString monospaceFamily READ monospaceFamily CONSTANT)
 
 public:
     explicit SystemTheme(QObject *parent = nullptr);
 
     bool darkMode() const { return m_darkMode; }
     qreal textScale() const { return m_textScale; }
+    QString monospaceFamily() const;
 
 signals:
     void darkModeChanged(bool darkMode);

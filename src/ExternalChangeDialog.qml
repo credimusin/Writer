@@ -41,7 +41,7 @@ Dialog {
         Label {
             text: root.deleted ? "File removed" : "File changed"
             color: root.strongTextColor
-            font.family: "monospace"
+            font.family: systemTheme.monospaceFamily
             font.pixelSize: Math.round(16 * root.textScale)
             font.bold: true
         }
@@ -55,7 +55,7 @@ Dialog {
                    : "This file changed outside Writer.")
             color: root.textColor
             wrapMode: Text.Wrap
-            font.family: "monospace"
+            font.family: systemTheme.monospaceFamily
             font.pixelSize: Math.round(13 * root.textScale)
         }
     }
