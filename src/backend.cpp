@@ -174,6 +174,48 @@ QRegularExpressionMatch matchHeading(const QString &text) {
     return headingRe.match(text);
 }
 
+QString stripInlineMarkdown(QString text) {
+    static const QRegularExpression boldItalicRe(QStringLiteral("(\\*\\*\\*|___)(.*?)\\1"));
+    static const QRegularExpression boldRe(QStringLiteral("(\\*\\*|__)(.*?)\\1"));
+    static const QRegularExpression italicRe(
+        QStringLiteral("(?<!\\*)\\*([^*\\n]+)\\*(?!\\*)|(?<!_)_([^_\\n]+)_(?!_)"));
+    static const QRegularExpression linkRe(
+        QStringLiteral("\\[([^\\]]*)\\]\\(((?:\\\\.|[^)])*)\\)"));
+    text.replace(boldItalicRe, QStringLiteral("\\2"));
+    text.replace(boldRe, QStringLiteral("\\2"));
+    text.replace(italicRe, QStringLiteral("\\1\\2"));
+    text.replace(linkRe, QStringLiteral("\\1"));
+    return text;
+}
+
+template <typename NextLineFn>
+QString findLeadingHeading(NextLineFn nextLine) {
+    bool inFrontmatter = false;
+    bool firstLine = true;
+    QString line;
+    while (nextLine(line)) {
+        const QString trimmed = line.trimmed();
+        if (firstLine && trimmed == QLatin1String("---")) {
+            firstLine = false;
+            inFrontmatter = true;
+            continue;
+        }
+        firstLine = false;
+        if (inFrontmatter) {
+            if (trimmed == QLatin1String("---") || trimmed == QLatin1String("..."))
+                inFrontmatter = false;
+            continue;
+        }
+        if (trimmed.isEmpty())
+            continue;
+        const QRegularExpressionMatch heading = matchHeading(line);
+        if (!heading.hasMatch())
+            return {};
+        return stripInlineMarkdown(heading.captured(3)).trimmed();
+    }
+    return {};
+}
+
 bool isVerbatimBlock(const QTextBlock &block) {
     const int state = block.userState();
     return state == MarkdownHighlighter::StateInCodeBlock
@@ -377,6 +419,7 @@ void Backend::attachDocument(QObject *textDocument) {
             });
 
     applyDocumentTypography();
+    refreshDocumentHeading();
     restoreRecovery();
 
     if (!m_fileUrl.isValid() && !m_metadata.hasMetadata)
@@ -661,6 +704,7 @@ bool Backend::editorTextChanged() {
     if (m_document)
         reapplyTypographyToChange();
 
+    refreshDocumentHeading();
     scheduleWordCount();
     scheduleSpellCheck();
     updateModifiedState();
@@ -730,6 +774,7 @@ void Backend::loadDocumentText(const QString &text) {
     applyDocumentTypography();
     m_wordCountTimer.stop();
     setWordCount(countWords(text));
+    refreshDocumentHeading();
 }
 
 void Backend::setFileUrl(const QUrl &url) {
@@ -1035,6 +1080,55 @@ void Backend::refreshWordCount() {
 
 void Backend::scheduleWordCount() {
     m_wordCountTimer.start();
+}
+
+QString Backend::leadingHeading(const QString &text) {
+    int pos = 0;
+    const int len = text.length();
+    return findLeadingHeading([&text, &pos, len](QString &line) {
+        if (pos > len)
+            return false;
+        if (pos == len) {
+            pos = len + 1;
+            return false;
+        }
+        const int newline = text.indexOf(QLatin1Char('\n'), pos);
+        if (newline < 0) {
+            line = text.mid(pos);
+            pos = len + 1;
+        } else {
+            line = text.mid(pos, newline - pos);
+            pos = newline + 1;
+        }
+        if (line.endsWith(QLatin1Char('\r')))
+            line.chop(1);
+        return true;
+    });
+}
+
+void Backend::setDocumentHeading(const QString &heading) {
+    if (m_documentHeading == heading)
+        return;
+
+    m_documentHeading = heading;
+    emit documentHeadingChanged();
+}
+
+void Backend::refreshDocumentHeading() {
+    if (!m_document) {
+        setDocumentHeading(QString());
+        return;
+    }
+
+    QTextBlock block = m_document->begin();
+    const QString heading = findLeadingHeading([&block](QString &line) {
+        if (!block.isValid())
+            return false;
+        line = block.text();
+        block = block.next();
+        return true;
+    });
+    setDocumentHeading(heading);
 }
 
 bool Backend::isInCodeBlock(int cursorPosition) const {

@@ -41,6 +41,7 @@ On macOS, `Ctrl` means `Cmd`.
 - `Ctrl+B`, `Ctrl+I`, and `Ctrl+K` insert bold (`**`), italic (`_`), and link (`[]()`) Markdown.
 - `Ctrl+H` cycles through heading levels (H1 to H6).
 - `Ctrl+Shift+H` clears the heading format.
+- `Ctrl+PgUp` / `Ctrl+Home` and `Ctrl+PgDn` / `Ctrl+End` jump to the start or end of the document (add `Shift` to select).
 - `Ctrl+T` switch the visual theme.
 - `Ctrl+.` opens spell and grammar suggestions at the cursor (also accessible via right-click on an underlined word).
 - `F7` toggles spell and grammar checking on the fly.

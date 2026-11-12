@@ -421,7 +421,7 @@ ApplicationWindow {
                 }
 
                 Label {
-                    text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+M          Properties\nCtrl+P          Export PDF\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nCtrl+H          Cycle Heading\nCtrl+Shift+H    Clear Heading\nCtrl+.          Spell Suggestions\nF7              Toggle Spell Check\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
+                    text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+M          Properties\nCtrl+P          Export PDF\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nCtrl+H          Cycle Heading\nCtrl+Shift+H    Clear Heading\nCtrl+PgUp/Home  Jump to Start\nCtrl+PgDn/End   Jump to End\nCtrl+.          Spell Suggestions\nF7              Toggle Spell Check\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
                     lineHeight: 1.5
                     color: win.textColor
                     font.family: systemTheme.monospaceFamily
@@ -451,6 +451,7 @@ ApplicationWindow {
 
         Flickable {
             id: editorFlick
+            objectName: "editorFlick"
             anchors.fill: parent
             anchors.leftMargin: 24
             anchors.rightMargin: 24
@@ -702,6 +703,19 @@ ApplicationWindow {
                         cursorPosition = target;
                 }
 
+                function jumpToDocumentBoundary(toEnd, extendSelection) {
+                    var target = toEnd ? text.length : 0;
+                    if (extendSelection)
+                        moveCursorSelection(target, TextEdit.SelectCharacters);
+                    else
+                        cursorPosition = target;
+
+                    if (toEnd)
+                        editorFlick.ensureCursorVisible();
+                    else
+                        editorFlick.contentY = 0;
+                }
+
                 function deleteParagraphBreakBehindCursor() {
                     if (selectionStart !== selectionEnd || cursorPosition < 2)
                         return false;
@@ -788,6 +802,20 @@ ApplicationWindow {
                                && (event.key === Qt.Key_PageDown || event.key === Qt.Key_PageUp)) {
                         movePage(event.key === Qt.Key_PageDown ? 1 : -1,
                                  event.modifiers & Qt.ShiftModifier);
+                        event.accepted = true;
+                    } else if (event.matches(StandardKey.MoveToStartOfDocument)
+                               || event.matches(StandardKey.SelectStartOfDocument)
+                               || ((event.modifiers & Qt.ControlModifier)
+                                   && !(event.modifiers & (Qt.AltModifier | Qt.MetaModifier))
+                                   && event.key === Qt.Key_PageUp)) {
+                        jumpToDocumentBoundary(false, Boolean(event.modifiers & Qt.ShiftModifier));
+                        event.accepted = true;
+                    } else if (event.matches(StandardKey.MoveToEndOfDocument)
+                               || event.matches(StandardKey.SelectEndOfDocument)
+                               || ((event.modifiers & Qt.ControlModifier)
+                                   && !(event.modifiers & (Qt.AltModifier | Qt.MetaModifier))
+                                   && event.key === Qt.Key_PageDown)) {
+                        jumpToDocumentBoundary(true, Boolean(event.modifiers & Qt.ShiftModifier));
                         event.accepted = true;
                     } else if (!commandModifier && event.key === Qt.Key_Minus) {
                         if (cursorPosition >= 1 && text.slice(cursorPosition - 1, cursorPosition) === "-") {
@@ -957,6 +985,35 @@ ApplicationWindow {
                 Component.onCompleted: {
                     backend.attachDocument(textDocument);
                     forceActiveFocus();
+                }
+            }
+        }
+
+        Label {
+            id: headerHeading
+            objectName: "documentHeadingLabel"
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.leftMargin: 12
+            anchors.topMargin: 10
+            width: Math.min(implicitWidth, Math.max(win.scaledSize(48), editorFlick.x + editor.x - anchors.leftMargin - 12))
+            text: backend.documentHeading
+            visible: text !== ""
+            color: win.mutedColor
+            opacity: headerHeadingHover.containsMouse ? 0.9 : 0.55
+            font.family: systemTheme.monospaceFamily
+            font.pixelSize: win.scaledSize(11)
+            elide: Text.ElideRight
+
+            MouseArea {
+                id: headerHeadingHover
+                anchors.fill: parent
+                anchors.margins: -4
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    editor.jumpToDocumentBoundary(false, false);
+                    editor.forceActiveFocus();
                 }
             }
         }

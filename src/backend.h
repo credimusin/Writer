@@ -24,6 +24,7 @@ class Backend : public QObject {
     Q_PROPERTY(bool modified READ modified NOTIFY modifiedChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
     Q_PROPERTY(int wordCount READ wordCount NOTIFY wordCountChanged)
+    Q_PROPERTY(QString documentHeading READ documentHeading NOTIFY documentHeadingChanged)
     Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY darkModeChanged)
     Q_PROPERTY(qreal textScale READ textScale WRITE setTextScale NOTIFY textScaleChanged)
     Q_PROPERTY(QString themeBackground READ themeBackground NOTIFY themeColorsChanged)
@@ -43,6 +44,7 @@ public:
     bool modified() const { return m_modified; }
     QString status() const { return m_status; }
     int wordCount() const { return m_wordCount; }
+    QString documentHeading() const { return m_documentHeading; }
     bool darkMode() const { return m_darkMode; }
     void setDarkMode(bool darkMode);
     qreal textScale() const { return m_textScale; }
@@ -58,6 +60,7 @@ public:
     QVariantList spellUnderlineSpans() const;
     void setSpellDiagnostics(const QList<LspClient::SpellDiagnostic> &diagnostics);
     static int countWords(const QString &text);
+    static QString leadingHeading(const QString &text);
     static QString normalizedLinkUrl(const QString &clipboardText);
     static QString suggestedFileName(const QString &text);
 
@@ -93,6 +96,7 @@ signals:
     void modifiedChanged();
     void statusChanged();
     void wordCountChanged();
+    void documentHeadingChanged();
     void darkModeChanged();
     void textScaleChanged();
     void themeColorsChanged();
@@ -114,6 +118,8 @@ private:
     void setWordCount(int words);
     void refreshWordCount();
     void scheduleWordCount();
+    void setDocumentHeading(const QString &heading);
+    void refreshDocumentHeading();
     void applyDocumentTypography();
     void reapplyTypographyToChange();
     void scheduleRecovery();
@@ -164,6 +170,7 @@ private:
     bool m_modified = false;
     QString m_status;
     int m_wordCount = 0;
+    QString m_documentHeading;
     bool m_darkMode = true;
     qreal m_textScale = 1.0;
     bool m_loading = false;

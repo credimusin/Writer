@@ -5,6 +5,7 @@
 #include <QQmlEngine>
 #include <QQuickStyle>
 #include <QQuickTextDocument>
+#include <QQuickWindow>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextLayout>
@@ -718,6 +719,95 @@ private slots:
         settings.beginGroup(QStringLiteral("spellcheck/dictionary"));
         QVERIFY(settings.value(QStringLiteral("ru-RU")).toStringList().contains(QStringLiteral("ошыбка")));
         settings.endGroup();
+    }
+
+    void extractsLeadingDocumentHeading() {
+        QCOMPARE(Backend::leadingHeading(QStringLiteral("# Main Heading\nBody")),
+                 QStringLiteral("Main Heading"));
+        QCOMPARE(Backend::leadingHeading(QStringLiteral("\n\n## Sub Heading\nBody")),
+                 QStringLiteral("Sub Heading"));
+        QCOMPARE(Backend::leadingHeading(QStringLiteral("# **Bold** _Italic_ [Link](https://example.com)")),
+                 QStringLiteral("Bold Italic Link"));
+        QCOMPARE(Backend::leadingHeading(QStringLiteral("---\ntitle: Meta\n---\n\n# After Frontmatter")),
+                 QStringLiteral("After Frontmatter"));
+        QCOMPARE(Backend::leadingHeading(QStringLiteral("Plain paragraph\n# Later Heading")),
+                 QString());
+        QCOMPARE(Backend::leadingHeading(QStringLiteral("#NoSpace")), QString());
+        QCOMPARE(Backend::leadingHeading(QStringLiteral("#   ")), QString());
+        QCOMPARE(Backend::leadingHeading(QString()), QString());
+
+        Backend backend;
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
+        QVERIFY(editor);
+
+        QObject *headingLabel = window->findChild<QObject *>(QStringLiteral("documentHeadingLabel"));
+        QVERIFY(headingLabel);
+        QCOMPARE(backend.documentHeading(), QString());
+        QCOMPARE(headingLabel->property("visible").toBool(), false);
+
+        editor->setProperty("text", QStringLiteral("# Live Heading\nBody paragraph"));
+        QCOMPARE(backend.documentHeading(), QStringLiteral("Live Heading"));
+        QCOMPARE(headingLabel->property("text").toString(), QStringLiteral("Live Heading"));
+        QCOMPARE(headingLabel->property("visible").toBool(), true);
+
+        editor->setProperty("text", QStringLiteral("Paragraph first\n# Second line"));
+        QCOMPARE(backend.documentHeading(), QString());
+        QCOMPARE(headingLabel->property("visible").toBool(), false);
+
+        QTemporaryDir tempDir;
+        const QString filePath = tempDir.filePath(QStringLiteral("Heading.md"));
+        writeFile(filePath, "---\ntitle: Meta Title\n---\n\n# File Title\nContent\n");
+        backend.open(QUrl::fromLocalFile(filePath));
+        QCOMPARE(backend.documentHeading(), QStringLiteral("File Title"));
+        QCOMPARE(headingLabel->property("visible").toBool(), true);
+    }
+
+    void jumpsToDocumentStartAndEnd() {
+        Backend backend;
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
+        QVERIFY(editor);
+
+        auto *quickWindow = qobject_cast<QQuickWindow *>(window.data());
+        QVERIFY(quickWindow);
+        quickWindow->show();
+        QVERIFY(QTest::qWaitForWindowExposed(quickWindow));
+
+        QObject *flick = window->findChild<QObject *>(QStringLiteral("editorFlick"));
+        QVERIFY(flick);
+
+        QStringList lines;
+        lines << QStringLiteral("# Long Document");
+        for (int i = 1; i <= 120; ++i)
+            lines << QStringLiteral("Line %1 of a long document for scrolling tests.").arg(i);
+        const QString longText = lines.join(QLatin1Char('\n'));
+
+        editor->setProperty("text", longText);
+        QVERIFY(QMetaObject::invokeMethod(editor, "forceActiveFocus"));
+        editor->setProperty("cursorPosition", 20);
+
+        QTest::keyClick(quickWindow, Qt::Key_PageDown, Qt::ControlModifier);
+        QCOMPARE(editor->property("cursorPosition").toInt(), longText.length());
+        QVERIFY(flick->property("contentY").toReal() > 0.0);
+
+        QTest::keyClick(quickWindow, Qt::Key_PageUp, Qt::ControlModifier);
+        QCOMPARE(editor->property("cursorPosition").toInt(), 0);
+        QCOMPARE(flick->property("contentY").toReal(), 0.0);
+
+        QTest::keyClick(quickWindow, Qt::Key_End, Qt::ControlModifier);
+        QCOMPARE(editor->property("cursorPosition").toInt(), longText.length());
+        QVERIFY(flick->property("contentY").toReal() > 0.0);
+
+        QTest::keyClick(quickWindow, Qt::Key_Home, Qt::ControlModifier);
+        QCOMPARE(editor->property("cursorPosition").toInt(), 0);
+        QCOMPARE(flick->property("contentY").toReal(), 0.0);
+
+        QTest::keyClick(quickWindow, Qt::Key_PageDown, Qt::ControlModifier | Qt::ShiftModifier);
+        QCOMPARE(editor->property("selectionStart").toInt(), 0);
+        QCOMPARE(editor->property("selectionEnd").toInt(), longText.length());
     }
 
 private:
