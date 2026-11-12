@@ -10,9 +10,11 @@ INCLUDEPATH += ../src
 SOURCES += \
     tst_writer.cpp \
     ../src/backend.cpp \
+    ../src/lspclient.cpp \
     ../src/markdownhighlighter.cpp \
     ../src/systemtheme.cpp
 HEADERS += \
     ../src/backend.h \
+    ../src/lspclient.h \
     ../src/markdownhighlighter.h \
     ../src/systemtheme.h

@@ -7,8 +7,10 @@
 #include <QQuickTextDocument>
 #include <QTextBlock>
 #include <QTextDocument>
+#include <QTextLayout>
 
 #include "backend.h"
+#include "lspclient.h"
 #include "markdownhighlighter.h"
 #include "systemtheme.h"
 
@@ -506,6 +508,216 @@ private slots:
         QSettings().setValue(QStringLiteral("file/lastSaveDirectory"),
                              saveDirectory.filePath(QStringLiteral("missing")));
         QCOMPARE(QFileInfo(Backend().suggestedSavePath()).absolutePath(), QDir::homePath());
+    }
+
+    void parsesJsonRpcFrames() {
+        const QJsonObject msg1{
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("id"), 1},
+            {QStringLiteral("method"), QStringLiteral("test")},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("word"), QStringLiteral("ошыбкой")}}}
+        };
+        const QJsonObject msg2{
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("method"), QStringLiteral("textDocument/publishDiagnostics")},
+            {QStringLiteral("params"), QJsonObject{{QStringLiteral("count"), 2}}}
+        };
+
+        const QByteArray wire1 = LspClient::encodeMessage(msg1);
+        const QByteArray wire2 = LspClient::encodeMessage(msg2);
+        const QByteArray combined = wire1 + wire2;
+
+        QByteArray buffer;
+        // Split across header, UTF-8 multibyte boundary, and concatenated second message.
+        const int split1 = 10;
+        const int split2 = wire1.size() - 5;
+        const int split3 = wire1.size() + 14;
+
+        buffer.append(combined.left(split1));
+        QCOMPARE(LspClient::parseMessages(buffer).size(), 0);
+
+        buffer.append(combined.mid(split1, split2 - split1));
+        QCOMPARE(LspClient::parseMessages(buffer).size(), 0);
+
+        buffer.append(combined.mid(split2, split3 - split2));
+        QList<QJsonObject> firstBatch = LspClient::parseMessages(buffer);
+        QCOMPARE(firstBatch.size(), 1);
+        QCOMPARE(firstBatch.at(0).value(QStringLiteral("params")).toObject()
+                     .value(QStringLiteral("word")).toString(),
+                 QStringLiteral("ошыбкой"));
+        QVERIFY(!buffer.isEmpty());
+
+        buffer.append(combined.mid(split3));
+        QList<QJsonObject> secondBatch = LspClient::parseMessages(buffer);
+        QCOMPARE(secondBatch.size(), 1);
+        QCOMPARE(secondBatch.at(0).value(QStringLiteral("method")).toString(),
+                 QStringLiteral("textDocument/publishDiagnostics"));
+        QVERIFY(buffer.isEmpty());
+
+        // Two concatenated frames in one chunk
+        buffer = combined;
+        const QList<QJsonObject> both = LspClient::parseMessages(buffer);
+        QCOMPARE(both.size(), 2);
+        QVERIFY(buffer.isEmpty());
+    }
+
+    void highlightsSpellAndGrammarDiagnostics() {
+        QTextDocument doc;
+        doc.setPlainText(QStringLiteral(
+            "---\n"
+            "title: Frontmatter typo\n"
+            "---\n"
+            "**ошыбка** `inline_typo` https://exmple.com/path\n"
+            "Привет мир grammar.\n"
+            "```python\n"
+            "code_tyop = 1\n"
+            "```\n"));
+        MarkdownHighlighter highlighter(&doc);
+
+        const auto formatRangeAt = [](const QTextBlock &block, int localPos, QTextCharFormat &out) {
+            const QList<QTextLayout::FormatRange> ranges = block.layout()->formats();
+            for (const QTextLayout::FormatRange &r : ranges) {
+                if (localPos >= r.start && localPos < r.start + r.length) {
+                    out = r.format;
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        QHash<int, QList<MarkdownHighlighter::DiagnosticSpan>> diags;
+        // Frontmatter line 1 (should be ignored)
+        diags[1].append({7, 11, MarkdownHighlighter::DiagnosticSeverity::Spelling});
+        // Line 3: **ошыбка** `inline_typo` https://exmple.com/path
+        diags[3].append({0, 10, MarkdownHighlighter::DiagnosticSeverity::Spelling});
+        diags[3].append({12, 11, MarkdownHighlighter::DiagnosticSeverity::Spelling});
+        diags[3].append({25, 18, MarkdownHighlighter::DiagnosticSeverity::Spelling});
+        // Line 4: Привет мир grammar.
+        diags[4].append({0, 10, MarkdownHighlighter::DiagnosticSeverity::Grammar});
+        // Line 6 (inside code block, should be ignored)
+        diags[6].append({0, 9, MarkdownHighlighter::DiagnosticSeverity::Spelling});
+
+        highlighter.setDiagnostics(diags);
+
+        QTextCharFormat fmt;
+        // Frontmatter must not be underlined
+        QVERIFY(!formatRangeAt(doc.findBlockByNumber(1), 10, fmt)
+                || fmt.underlineStyle() != QTextCharFormat::WaveUnderline);
+
+        // Hidden ** marker at pos 0 must not be underlined, inner word at pos 3 must be bold + coral/red wave
+        QVERIFY(formatRangeAt(doc.findBlockByNumber(3), 0, fmt));
+        QVERIFY(fmt.underlineStyle() != QTextCharFormat::WaveUnderline);
+
+        QVERIFY(formatRangeAt(doc.findBlockByNumber(3), 3, fmt));
+        QCOMPARE(fmt.underlineStyle(), QTextCharFormat::WaveUnderline);
+        QCOMPARE(fmt.fontWeight(), QFont::Bold);
+        const QColor spellColor = fmt.underlineColor();
+
+        // Inline code at pos 14 must not be underlined
+        QVERIFY(formatRangeAt(doc.findBlockByNumber(3), 14, fmt));
+        QVERIFY(fmt.underlineStyle() != QTextCharFormat::WaveUnderline);
+
+        // Bare URL at pos 28 must not be underlined
+        QVERIFY(!formatRangeAt(doc.findBlockByNumber(3), 28, fmt)
+                || fmt.underlineStyle() != QTextCharFormat::WaveUnderline);
+
+        // Grammar hint on line 4 must have WaveUnderline with a distinct amber color
+        QVERIFY(formatRangeAt(doc.findBlockByNumber(4), 2, fmt));
+        QCOMPARE(fmt.underlineStyle(), QTextCharFormat::WaveUnderline);
+        QVERIFY(fmt.underlineColor() != spellColor);
+
+        // Code block line 6 must not be underlined
+        QVERIFY(formatRangeAt(doc.findBlockByNumber(6), 2, fmt));
+        QVERIFY(fmt.underlineStyle() != QTextCharFormat::WaveUnderline);
+    }
+
+    void mapsDiagnosticsAndExposesSuggestions() {
+        Backend backend;
+        QQmlEngine engine;
+        QScopedPointer<QObject> window;
+        QObject *editor = loadEditor(engine, backend, window);
+        QVERIFY(editor);
+
+        const QString sample = QStringLiteral(
+            "Привет ошыбка здесь\n"
+            "Second line `ignored_code`\n"
+            "Третья строка с опечаткой.\n");
+        editor->setProperty("text", sample);
+
+        LspClient::SpellDiagnostic d0;
+        d0.startLine = 0;
+        d0.startCharacter = 7;
+        d0.endLine = 0;
+        d0.endCharacter = 13;
+        d0.code = QStringLiteral("MORFOLOGIK_RULE_RU_RU");
+        d0.message = QStringLiteral("Возможно найдена орфографическая ошибка.");
+        d0.language = QStringLiteral("ru-RU");
+        d0.suggestions = {QStringLiteral("ошибка")};
+
+        LspClient::SpellDiagnostic dIgnored;
+        dIgnored.startLine = 1;
+        dIgnored.startCharacter = 13;
+        dIgnored.endLine = 1;
+        dIgnored.endCharacter = 25;
+        dIgnored.code = QStringLiteral("MORFOLOGIK_RULE_EN_US");
+        dIgnored.message = QStringLiteral("Possible spelling mistake");
+
+        LspClient::SpellDiagnostic d2;
+        d2.startLine = 2;
+        d2.startCharacter = 16;
+        d2.endLine = 2;
+        d2.endCharacter = 25;
+        d2.code = QStringLiteral("MORFOLOGIK_RULE_RU_RU");
+        d2.message = QStringLiteral("Орфографическая ошибка");
+        d2.language = QStringLiteral("ru-RU");
+        d2.suggestions = {QStringLiteral("опечаткой"), QStringLiteral("отпечаткой")};
+
+        backend.setSpellDiagnostics({d0, dIgnored, d2});
+        QCOMPARE(backend.spellUnderlineSpans().size(), 2);
+
+        // Inline code diagnostic should have been filtered out
+        const int codePos = sample.indexOf(QStringLiteral("ignored_code")) + 2;
+        QCOMPARE(backend.diagnosticAt(codePos).value(QStringLiteral("valid")).toBool(), false);
+
+        // First diagnostic should resolve at cursor inside word
+        const int word0Pos = sample.indexOf(QStringLiteral("ошыбка")) + 3;
+        const QVariantMap info0 = backend.diagnosticAt(word0Pos);
+        QCOMPARE(info0.value(QStringLiteral("valid")).toBool(), true);
+        QCOMPARE(info0.value(QStringLiteral("word")).toString(), QStringLiteral("ошыбка"));
+        QCOMPARE(info0.value(QStringLiteral("suggestions")).toStringList(),
+                 QStringList{QStringLiteral("ошибка")});
+        QCOMPARE(info0.value(QStringLiteral("isSpelling")).toBool(), true);
+
+        // Open SpellPopup via keyboard trigger and choose first suggestion
+        editor->setProperty("cursorPosition", word0Pos);
+        QObject *popup = window->findChild<QObject *>(QStringLiteral("spellPopup"));
+        QVERIFY(popup);
+        QVERIFY(QMetaObject::invokeMethod(editor, "openSpellPopupAtCursor"));
+        QCOMPARE(popup->property("opened").toBool(), true);
+        QVERIFY(QMetaObject::invokeMethod(popup, "activateIndex", Q_ARG(QVariant, 0)));
+        QCOMPARE(popup->property("opened").toBool(), false);
+
+        QVERIFY(editor->property("text").toString().startsWith(QStringLiteral("Привет ошибка здесь")));
+        // Diagnostic on line 0 was cleared immediately on edit, while line 2 stays valid
+        QCOMPARE(backend.diagnosticAt(word0Pos).value(QStringLiteral("valid")).toBool(), false);
+        const int word2Pos = editor->property("text").toString().indexOf(QStringLiteral("опечаткой")) + 2;
+        QCOMPARE(backend.diagnosticAt(word2Pos).value(QStringLiteral("valid")).toBool(), true);
+
+        // Undo restores original text (remove + insert = 2 QTextEdit commands in replaceRange)
+        QVERIFY(QMetaObject::invokeMethod(editor, "undo"));
+        QVERIFY(QMetaObject::invokeMethod(editor, "undo"));
+        QCOMPARE(editor->property("text").toString(), sample);
+
+        // Add to dictionary persists and clears matching diagnostics
+        backend.setSpellDiagnostics({d0, d2});
+        backend.addToDictionary(QStringLiteral("ошыбка"), QStringLiteral("ru-RU"));
+        QCOMPARE(backend.diagnosticAt(sample.indexOf(QStringLiteral("ошыбка")) + 1)
+                     .value(QStringLiteral("valid")).toBool(),
+                 false);
+        QSettings settings;
+        settings.beginGroup(QStringLiteral("spellcheck/dictionary"));
+        QVERIFY(settings.value(QStringLiteral("ru-RU")).toStringList().contains(QStringLiteral("ошыбка")));
+        settings.endGroup();
     }
 
 private:

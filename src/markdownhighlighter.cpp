@@ -3,7 +3,11 @@
 #include <QColor>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QSet>
+#include <QTextBlock>
 #include <QTextDocument>
+
+#include <algorithm>
 
 MarkdownHighlighter::MarkdownHighlighter(QTextDocument *document)
     : QSyntaxHighlighter(document) {
@@ -39,6 +43,51 @@ void MarkdownHighlighter::setSearch(const QString &query, int currentMatchStart)
     m_searchQuery = query;
     m_currentMatchStart = currentMatchStart;
     rehighlight();
+}
+
+void MarkdownHighlighter::setDiagnostics(const QHash<int, QList<DiagnosticSpan>> &diagnostics) {
+    if (m_diagnostics == diagnostics)
+        return;
+
+    QSet<int> changedBlocks;
+    for (auto it = m_diagnostics.cbegin(); it != m_diagnostics.cend(); ++it) {
+        if (!diagnostics.contains(it.key()) || diagnostics.value(it.key()) != it.value())
+            changedBlocks.insert(it.key());
+    }
+    for (auto it = diagnostics.cbegin(); it != diagnostics.cend(); ++it) {
+        if (!m_diagnostics.contains(it.key()) || m_diagnostics.value(it.key()) != it.value())
+            changedBlocks.insert(it.key());
+    }
+
+    m_diagnostics = diagnostics;
+
+    if (!document() || changedBlocks.isEmpty())
+        return;
+
+    QList<int> sorted = changedBlocks.values();
+    std::sort(sorted.begin(), sorted.end());
+    for (int blockNum : sorted) {
+        const QTextBlock block = document()->findBlockByNumber(blockNum);
+        if (block.isValid())
+            rehighlightBlock(block);
+    }
+}
+
+void MarkdownHighlighter::clearDiagnosticsInRange(int startBlock, int endBlock) {
+    if (m_diagnostics.isEmpty() || !document())
+        return;
+
+    QList<int> cleared;
+    for (int blockNum = startBlock; blockNum <= endBlock; ++blockNum) {
+        if (m_diagnostics.remove(blockNum) > 0)
+            cleared.append(blockNum);
+    }
+
+    for (int blockNum : cleared) {
+        const QTextBlock block = document()->findBlockByNumber(blockNum);
+        if (block.isValid())
+            rehighlightBlock(block);
+    }
 }
 
 void MarkdownHighlighter::rebuildFormats() {
@@ -131,6 +180,11 @@ void MarkdownHighlighter::rebuildFormats() {
     m_currentSearchFormat = QTextCharFormat();
     m_currentSearchFormat.setBackground(m_darkMode ? QColor(QStringLiteral("#b36b20"))
                                                    : QColor(QStringLiteral("#ffad42")));
+
+    m_spellingUnderlineColor = m_darkMode ? QColor(QStringLiteral("#e05d5d"))
+                                          : QColor(QStringLiteral("#d32f2f"));
+    m_grammarUnderlineColor = m_darkMode ? QColor(QStringLiteral("#e0a84b"))
+                                         : QColor(QStringLiteral("#c77c02"));
 }
 
 bool MarkdownHighlighter::isRuleLine(const QString &text) {
@@ -237,6 +291,54 @@ void MarkdownHighlighter::highlightBlock(const QString &text) {
     }
 
     highlightSearch(text);
+    if (currentBlockState() == StateNormal && !isFenceLine(text) && !isRuleLine(text))
+        highlightDiagnostics(text);
+}
+
+void MarkdownHighlighter::highlightDiagnostics(const QString &text) {
+    if (text.isEmpty() || m_diagnostics.isEmpty())
+        return;
+
+    const QList<DiagnosticSpan> spans = m_diagnostics.value(currentBlock().blockNumber());
+    if (spans.isEmpty())
+        return;
+
+    const QList<Span> ignored = ignoredSpellSpans(text);
+    const auto isIgnoredPos = [&ignored](int pos) {
+        for (const Span &span : ignored) {
+            if (pos >= span.start && pos < span.start + span.length)
+                return true;
+        }
+        return false;
+    };
+
+    for (const DiagnosticSpan &diag : spans) {
+        const int start = qBound(0, diag.start, text.length());
+        const int end = qBound(start, diag.start + diag.length, text.length());
+        if (start >= end)
+            continue;
+
+        const QColor underlineColor = diag.severity == DiagnosticSeverity::Spelling
+            ? m_spellingUnderlineColor
+            : m_grammarUnderlineColor;
+
+        int pos = start;
+        while (pos < end) {
+            if (isIgnoredPos(pos)) {
+                ++pos;
+                continue;
+            }
+            QTextCharFormat base = format(pos);
+            int runEnd = pos + 1;
+            while (runEnd < end && !isIgnoredPos(runEnd) && format(runEnd) == base)
+                ++runEnd;
+
+            base.setUnderlineStyle(QTextCharFormat::WaveUnderline);
+            base.setUnderlineColor(underlineColor);
+            setFormat(pos, runEnd - pos, base);
+            pos = runEnd;
+        }
+    }
 }
 
 void MarkdownHighlighter::highlightSearch(const QString &text) {
@@ -429,4 +531,78 @@ QList<MarkdownHighlighter::InlineMarkup> MarkdownHighlighter::inlineMarkup(const
     }
 
     return markup;
+}
+
+QList<MarkdownHighlighter::Span> MarkdownHighlighter::ignoredSpellSpans(const QString &text) {
+    QList<Span> spans;
+    if (text.isEmpty())
+        return spans;
+
+    if (text.startsWith(QLatin1Char('#'))) {
+        static const QRegularExpression headingRe(QStringLiteral("^(#{1,6}\\s+)"));
+        const QRegularExpressionMatch heading = headingRe.match(text);
+        if (heading.hasMatch())
+            spans.append({0, int(heading.capturedLength(1))});
+    }
+
+    if (text.contains(QLatin1Char('`'))) {
+        static const QRegularExpression inlineCodeRe(QStringLiteral("(`+)(.+?)\\1"));
+        QRegularExpressionMatchIterator it = inlineCodeRe.globalMatch(text);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            spans.append({int(m.capturedStart(0)), int(m.capturedLength(0))});
+        }
+    }
+
+    const QList<InlineMarkup> markup = inlineMarkup(text);
+    for (const InlineMarkup &item : markup) {
+        if (item.content.length == 0)
+            continue;
+        for (const Span &marker : item.markers) {
+            if (marker.length > 0)
+                spans.append(marker);
+        }
+    }
+
+    static const QRegularExpression urlRe(
+        QStringLiteral("\\b(?:(?:https?|ftp)://|mailto:|www\\.)[^\\s)>\\]]+"));
+    QRegularExpressionMatchIterator urlIt = urlRe.globalMatch(text);
+    while (urlIt.hasNext()) {
+        const QRegularExpressionMatch m = urlIt.next();
+        spans.append({int(m.capturedStart(0)), int(m.capturedLength(0))});
+    }
+
+    return spans;
+}
+
+bool MarkdownHighlighter::isRangeIgnoredForSpelling(const QTextBlock &block, int localStart,
+                                                    int localLength) {
+    if (!block.isValid() || localLength <= 0)
+        return true;
+
+    const QString text = block.text();
+    const int state = block.userState();
+    if (state == StateInCodeBlock || state == StateInFrontmatter
+            || isFenceLine(text) || isRuleLine(text)
+            || (block.blockNumber() == 0 && text.trimmed() == QLatin1String("---")))
+        return true;
+
+    const int start = qBound(0, localStart, text.length());
+    const int end = qBound(start, localStart + localLength, text.length());
+    if (start >= end)
+        return true;
+
+    const QList<Span> ignored = ignoredSpellSpans(text);
+    for (int pos = start; pos < end; ++pos) {
+        bool covered = false;
+        for (const Span &span : ignored) {
+            if (pos >= span.start && pos < span.start + span.length) {
+                covered = true;
+                break;
+            }
+        }
+        if (!covered)
+            return false;
+    }
+    return true;
 }

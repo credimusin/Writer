@@ -35,8 +35,12 @@
 namespace {
 
 constexpr qreal typoraLineHeightPercent = 140;
+constexpr int spellCheckDebounceMs = 450;
 const QString lastSaveDirectorySetting = QStringLiteral("file/lastSaveDirectory");
 const QString defaultAuthorSetting = QStringLiteral("metadata/defaultAuthor");
+const QString spellEnabledSetting = QStringLiteral("spellcheck/enabled");
+const QString spellLanguageSetting = QStringLiteral("spellcheck/language");
+const QString spellDictionaryGroup = QStringLiteral("spellcheck/dictionary");
 const QString markdownFileFilter = QStringLiteral("Markdown files (*.md *.markdown);;All files (*)");
 
 struct FrontmatterInfo {
@@ -181,10 +185,20 @@ bool isVerbatimBlock(const QTextBlock &block) {
 void applyBlockTypography(QTextCursor &cursor, const QTextBlock &block) {
     const bool centered = !isVerbatimBlock(block)
         && (matchHeading(block.text()).hasMatch() || MarkdownHighlighter::isRuleLine(block.text()));
+    const Qt::Alignment expectedAlignment = centered ? Qt::AlignHCenter : Qt::AlignLeft;
+
+    const QTextBlockFormat current = block.blockFormat();
+    if (current.lineHeightType() == QTextBlockFormat::ProportionalHeight
+            && qFuzzyCompare(current.lineHeight(), typoraLineHeightPercent)
+            && current.alignment() == expectedAlignment
+            && qFuzzyIsNull(current.topMargin())
+            && qFuzzyIsNull(current.bottomMargin())) {
+        return;
+    }
 
     QTextBlockFormat format;
     format.setLineHeight(typoraLineHeightPercent, QTextBlockFormat::ProportionalHeight);
-    format.setAlignment(centered ? Qt::AlignHCenter : Qt::AlignLeft);
+    format.setAlignment(expectedAlignment);
     format.setTopMargin(0);
     format.setBottomMargin(0);
 
@@ -196,6 +210,17 @@ void unwatchAll(QFileSystemWatcher &watcher) {
     const QStringList watched = watcher.files();
     if (!watched.isEmpty())
         watcher.removePaths(watched);
+}
+
+QString extractDocumentRange(const QTextDocument *document, int docStart, int docEnd) {
+    if (!document || docStart >= docEnd)
+        return {};
+    QTextCursor cursor(const_cast<QTextDocument *>(document));
+    cursor.setPosition(docStart);
+    cursor.setPosition(docEnd, QTextCursor::KeepAnchor);
+    QString text = cursor.selectedText();
+    text.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+    return text;
 }
 
 }
@@ -253,6 +278,16 @@ Backend::Backend(QObject *parent) : QObject(parent) {
     m_recoveryTimer.setSingleShot(true);
     m_recoveryTimer.setInterval(750);
     connect(&m_recoveryTimer, &QTimer::timeout, this, &Backend::writeRecovery);
+
+    const QSettings settings;
+    m_spellCheckEnabled = settings.value(spellEnabledSetting, true).toBool();
+    m_spellCheckLanguage = settings.value(spellLanguageSetting, QStringLiteral("ru-RU")).toString();
+    if (m_spellCheckLanguage.trimmed().isEmpty())
+        m_spellCheckLanguage = QStringLiteral("ru-RU");
+
+    m_spellDebounceTimer.setSingleShot(true);
+    m_spellDebounceTimer.setInterval(spellCheckDebounceMs);
+    connect(&m_spellDebounceTimer, &QTimer::timeout, this, &Backend::sendSpellCheckChange);
     connect(&m_fileWatcher, &QFileSystemWatcher::fileChanged, this,
             [this](const QString &path) {
                 if (path != m_fileUrl.toLocalFile())
@@ -327,16 +362,18 @@ void Backend::attachDocument(QObject *textDocument) {
 
     m_document = quickDocument->textDocument();
     m_lastDocumentText = m_document->toPlainText();
+    m_lastBlockCount = m_document->blockCount();
     m_highlighter = new MarkdownHighlighter(m_document);
     m_highlighter->setDarkMode(m_darkMode);
     m_highlighter->setColors(m_themeBackground, m_themeForeground, m_themeAccent);
 
     connect(m_document, &QTextDocument::contentsChange, this,
-            [this](int position, int, int charsAdded) {
+            [this](int position, int charsRemoved, int charsAdded) {
                 if (m_formattingTypography || m_loading)
                     return;
                 m_lastChangePos = position;
                 m_lastChangeAdded = charsAdded;
+                handleDocumentContentsChange(position, charsRemoved, charsAdded);
             });
 
     applyDocumentTypography();
@@ -344,6 +381,8 @@ void Backend::attachDocument(QObject *textDocument) {
 
     if (!m_fileUrl.isValid() && !m_metadata.hasMetadata)
         initNewDocumentMetadata();
+
+    ensureLspClientStarted();
 }
 
 void Backend::openDialog() {
@@ -385,6 +424,7 @@ void Backend::open(const QUrl &url) {
     m_hasKnownFileContents = true;
     setFileUrl(url);
     watchCurrentFile();
+    syncLspOpenDocument();
     setModified(false);
     setStatus(QStringLiteral("Opened %1").arg(fileName()));
 }
@@ -622,6 +662,7 @@ bool Backend::editorTextChanged() {
         reapplyTypographyToChange();
 
     scheduleWordCount();
+    scheduleSpellCheck();
     updateModifiedState();
     return true;
 }
@@ -681,8 +722,11 @@ void Backend::loadDocumentText(const QString &text) {
     m_loading = true;
     m_document->setPlainText(text);
     m_lastDocumentText = text;
+    m_lastBlockCount = m_document->blockCount();
     m_loading = false;
 
+    clearSpellDiagnostics();
+    m_spellDebounceTimer.stop();
     applyDocumentTypography();
     m_wordCountTimer.stop();
     setWordCount(countWords(text));
@@ -773,8 +817,12 @@ void Backend::saveAs(const QUrl &url) {
     m_lastKnownFileContents = contents;
     m_hasKnownFileContents = true;
     m_lastDocumentText = currentDocumentText();
-    setFileUrl(QUrl::fromLocalFile(localPath));
+    const QUrl newUrl = QUrl::fromLocalFile(localPath);
+    const bool uriChanged = m_fileUrl != newUrl;
+    setFileUrl(newUrl);
     watchCurrentFile();
+    if (uriChanged)
+        syncLspOpenDocument();
     QSettings().setValue(lastSaveDirectorySetting, QFileInfo(localPath).absolutePath());
     setModified(false);
     setStatus(QStringLiteral("Saved %1").arg(fileName()));
@@ -1027,4 +1075,344 @@ void Backend::reapplyTypographyToChange() {
 
     cursor.endEditBlock();
     m_formattingTypography = false;
+}
+
+bool Backend::spellCheckAvailable() const {
+    return m_lspClient && m_lspClient->isAvailable();
+}
+
+void Backend::setSpellCheckEnabled(bool enabled) {
+    if (m_spellCheckEnabled == enabled)
+        return;
+
+    m_spellCheckEnabled = enabled;
+    QSettings().setValue(spellEnabledSetting, enabled);
+    emit spellCheckEnabledChanged();
+
+    if (!enabled) {
+        m_spellDebounceTimer.stop();
+        clearSpellDiagnostics();
+        if (m_lspClient)
+            m_lspClient->stop();
+    } else {
+        ensureLspClientStarted();
+        syncLspOpenDocument();
+    }
+}
+
+void Backend::setSpellCheckLanguage(const QString &language) {
+    const QString trimmed = language.trimmed();
+    const QString normalized = trimmed.isEmpty() ? QStringLiteral("ru-RU") : trimmed;
+    if (m_spellCheckLanguage == normalized)
+        return;
+
+    m_spellCheckLanguage = normalized;
+    QSettings().setValue(spellLanguageSetting, normalized);
+    emit spellCheckLanguageChanged();
+
+    if (m_lspClient)
+        m_lspClient->setConfiguration(m_spellCheckLanguage, loadCustomDictionary());
+}
+
+void Backend::ensureLspClientStarted() {
+    if (QStandardPaths::isTestModeEnabled() || !m_spellCheckEnabled)
+        return;
+
+    if (!m_lspClient) {
+        m_lspClient = new LspClient(this);
+        connect(m_lspClient, &LspClient::availableChanged,
+                this, &Backend::spellCheckAvailableChanged);
+        connect(m_lspClient, &LspClient::diagnosticsReceived,
+                this, [this](const QString &uri, const QList<LspClient::SpellDiagnostic> &diags) {
+                    if (uri == currentDocumentUri())
+                        setSpellDiagnostics(diags);
+                });
+        connect(m_lspClient, &LspClient::suggestionsUpdated,
+                this, [this](const QString &uri, const QList<LspClient::SpellDiagnostic> &diags) {
+                    if (uri == currentDocumentUri())
+                        setSpellDiagnostics(diags);
+                });
+    }
+
+    m_lspClient->setConfiguration(m_spellCheckLanguage, loadCustomDictionary());
+    if (!m_lspClient->isRunning())
+        m_lspClient->start();
+
+    syncLspOpenDocument();
+}
+
+void Backend::syncLspOpenDocument() {
+    if (!m_lspClient || !m_spellCheckEnabled || !m_document)
+        return;
+    m_lspClient->openDocument(currentDocumentUri(), currentDocumentText());
+}
+
+void Backend::scheduleSpellCheck() {
+    if (!m_spellCheckEnabled || !m_lspClient || !m_lspClient->isAvailable())
+        return;
+    m_spellDebounceTimer.start();
+}
+
+void Backend::sendSpellCheckChange() {
+    if (!m_spellCheckEnabled || !m_lspClient || !m_lspClient->isAvailable() || !m_document)
+        return;
+    m_lspClient->changeDocument(currentDocumentText());
+}
+
+void Backend::clearSpellDiagnostics() {
+    if (m_diagnostics.isEmpty()) {
+        if (m_highlighter)
+            m_highlighter->setDiagnostics({});
+        return;
+    }
+
+    m_diagnostics.clear();
+    if (m_highlighter)
+        m_highlighter->setDiagnostics({});
+    emit spellDiagnosticsChanged();
+}
+
+void Backend::setSpellDiagnostics(const QList<LspClient::SpellDiagnostic> &diagnostics) {
+    if (!m_document || !m_spellCheckEnabled) {
+        clearSpellDiagnostics();
+        return;
+    }
+
+    QList<MappedDiagnostic> mapped;
+    QHash<int, QList<MarkdownHighlighter::DiagnosticSpan>> highlightMap;
+
+    for (const LspClient::SpellDiagnostic &diag : diagnostics) {
+        const QTextBlock startBlock = m_document->findBlockByNumber(diag.startLine);
+        const QTextBlock endBlock = m_document->findBlockByNumber(diag.endLine);
+        if (!startBlock.isValid() || !endBlock.isValid())
+            continue;
+
+        const int startLocal = qBound(0, diag.startCharacter, startBlock.text().length());
+        const int endLocal = qBound(0, diag.endCharacter, endBlock.text().length());
+        const int docStart = startBlock.position() + startLocal;
+        const int docEnd = endBlock.position() + endLocal;
+        if (docStart >= docEnd)
+            continue;
+
+        if (diag.startLine == diag.endLine) {
+            if (MarkdownHighlighter::isRangeIgnoredForSpelling(
+                    startBlock, startLocal, endLocal - startLocal)) {
+                continue;
+            }
+        } else {
+            bool allIgnored = true;
+            for (int line = diag.startLine; line <= diag.endLine; ++line) {
+                const QTextBlock block = m_document->findBlockByNumber(line);
+                const int localStart = (line == diag.startLine) ? startLocal : 0;
+                const int localEnd = (line == diag.endLine) ? endLocal : block.text().length();
+                if (!MarkdownHighlighter::isRangeIgnoredForSpelling(
+                        block, localStart, localEnd - localStart)) {
+                    allIgnored = false;
+                    break;
+                }
+            }
+            if (allIgnored)
+                continue;
+        }
+
+        const QString word = (diag.startLine == diag.endLine)
+            ? startBlock.text().mid(startLocal, endLocal - startLocal)
+            : extractDocumentRange(m_document, docStart, docEnd);
+
+        const bool spelling = diag.isSpelling();
+        const MarkdownHighlighter::DiagnosticSeverity severity = spelling
+            ? MarkdownHighlighter::DiagnosticSeverity::Spelling
+            : MarkdownHighlighter::DiagnosticSeverity::Grammar;
+
+        for (int line = diag.startLine; line <= diag.endLine; ++line) {
+            const QTextBlock block = m_document->findBlockByNumber(line);
+            if (!block.isValid())
+                continue;
+            const int localStart = (line == diag.startLine) ? startLocal : 0;
+            const int localEnd = (line == diag.endLine) ? endLocal : block.text().length();
+            if (localEnd > localStart)
+                highlightMap[line].append({localStart, localEnd - localStart, severity});
+        }
+
+        mapped.append(MappedDiagnostic{
+            docStart,
+            docEnd,
+            diag.startLine,
+            diag.endLine,
+            spelling,
+            diag.code,
+            diag.message,
+            diag.language.isEmpty() ? m_spellCheckLanguage : diag.language,
+            word,
+            diag.suggestions
+        });
+    }
+
+    m_diagnostics = mapped;
+    if (m_highlighter)
+        m_highlighter->setDiagnostics(highlightMap);
+    emit spellDiagnosticsChanged();
+}
+
+void Backend::handleDocumentContentsChange(int position, int charsRemoved, int charsAdded) {
+    if (!m_document)
+        return;
+
+    const int maxPos = qMax(0, m_document->characterCount() - 1);
+    const int startPos = qBound(0, position, maxPos);
+    const int endPos = qBound(startPos, position + charsAdded, maxPos);
+    const int startBlockNum = m_document->findBlock(startPos).blockNumber();
+    const int endBlockNum = m_document->findBlock(endPos).blockNumber();
+
+    const int newBlockCount = m_document->blockCount();
+    const int blockDelta = newBlockCount - m_lastBlockCount;
+    m_lastBlockCount = newBlockCount;
+
+    if (m_diagnostics.isEmpty()) {
+        if (m_highlighter)
+            m_highlighter->clearDiagnosticsInRange(startBlockNum, endBlockNum);
+        return;
+    }
+
+    const int oldEndBlock = endBlockNum - blockDelta;
+    const int charDelta = charsAdded - charsRemoved;
+    bool listChanged = false;
+
+    for (int i = m_diagnostics.size() - 1; i >= 0; --i) {
+        MappedDiagnostic &diag = m_diagnostics[i];
+        const bool overlapsBlocks = diag.endLine >= startBlockNum && diag.startLine <= oldEndBlock;
+        if (overlapsBlocks) {
+            m_diagnostics.removeAt(i);
+            listChanged = true;
+        } else if (diag.startLine > oldEndBlock) {
+            diag.startLine += blockDelta;
+            diag.endLine += blockDelta;
+            diag.start += charDelta;
+            diag.end += charDelta;
+            if (blockDelta != 0)
+                listChanged = true;
+        }
+    }
+
+    if (blockDelta == 0) {
+        if (m_highlighter)
+            m_highlighter->clearDiagnosticsInRange(startBlockNum, endBlockNum);
+    } else if (m_highlighter) {
+        m_highlighter->setDiagnostics(buildHighlightMap());
+    }
+
+    if (listChanged)
+        emit spellDiagnosticsChanged();
+}
+
+QHash<int, QList<MarkdownHighlighter::DiagnosticSpan>> Backend::buildHighlightMap() const {
+    QHash<int, QList<MarkdownHighlighter::DiagnosticSpan>> rebuilt;
+    if (!m_document)
+        return rebuilt;
+
+    for (const MappedDiagnostic &diag : m_diagnostics) {
+        const MarkdownHighlighter::DiagnosticSeverity severity = diag.isSpelling
+            ? MarkdownHighlighter::DiagnosticSeverity::Spelling
+            : MarkdownHighlighter::DiagnosticSeverity::Grammar;
+        for (int line = diag.startLine; line <= diag.endLine; ++line) {
+            const QTextBlock block = m_document->findBlockByNumber(line);
+            if (!block.isValid())
+                continue;
+            const int localStart = (line == diag.startLine)
+                ? qBound(0, diag.start - block.position(), block.text().length())
+                : 0;
+            const int localEnd = (line == diag.endLine)
+                ? qBound(localStart, diag.end - block.position(), block.text().length())
+                : block.text().length();
+            if (localEnd > localStart)
+                rebuilt[line].append({localStart, localEnd - localStart, severity});
+        }
+    }
+    return rebuilt;
+}
+
+QVariantMap Backend::diagnosticAt(int cursorPosition) const {
+    for (const MappedDiagnostic &diag : m_diagnostics) {
+        if (cursorPosition >= diag.start && cursorPosition <= diag.end) {
+            return {
+                {QStringLiteral("valid"), true},
+                {QStringLiteral("start"), diag.start},
+                {QStringLiteral("end"), diag.end},
+                {QStringLiteral("message"), diag.message},
+                {QStringLiteral("word"), diag.word},
+                {QStringLiteral("code"), diag.code},
+                {QStringLiteral("isSpelling"), diag.isSpelling},
+                {QStringLiteral("language"), diag.language},
+                {QStringLiteral("suggestions"), diag.suggestions}
+            };
+        }
+    }
+    return {{QStringLiteral("valid"), false}};
+}
+
+QVariantList Backend::spellUnderlineSpans() const {
+    QVariantList spans;
+    spans.reserve(m_diagnostics.size());
+    for (const MappedDiagnostic &diag : m_diagnostics) {
+        spans.append(QVariantMap{
+            {QStringLiteral("start"), diag.start},
+            {QStringLiteral("end"), diag.end},
+            {QStringLiteral("isSpelling"), diag.isSpelling}
+        });
+    }
+    return spans;
+}
+
+void Backend::addToDictionary(const QString &word, const QString &language) {
+    const QString trimmed = word.trimmed();
+    if (trimmed.isEmpty())
+        return;
+
+    const QString targetLang = language.trimmed().isEmpty()
+        ? m_spellCheckLanguage
+        : language.trimmed();
+
+    QSettings settings;
+    settings.beginGroup(spellDictionaryGroup);
+    QStringList words = settings.value(targetLang).toStringList();
+    if (!words.contains(trimmed)) {
+        words.append(trimmed);
+        settings.setValue(targetLang, words);
+    }
+    settings.endGroup();
+
+    if (m_lspClient)
+        m_lspClient->setConfiguration(m_spellCheckLanguage, loadCustomDictionary());
+
+    bool removedAny = false;
+    for (int i = m_diagnostics.size() - 1; i >= 0; --i) {
+        if (m_diagnostics.at(i).word.compare(trimmed, Qt::CaseInsensitive) == 0) {
+            m_diagnostics.removeAt(i);
+            removedAny = true;
+        }
+    }
+
+    if (removedAny && m_document && m_highlighter) {
+        m_highlighter->setDiagnostics(buildHighlightMap());
+        emit spellDiagnosticsChanged();
+    }
+}
+
+QString Backend::currentDocumentUri() const {
+    if (m_fileUrl.isLocalFile())
+        return m_fileUrl.toString();
+    return QStringLiteral("file:///Untitled.md");
+}
+
+QMap<QString, QStringList> Backend::loadCustomDictionary() const {
+    QMap<QString, QStringList> dict;
+    QSettings settings;
+    settings.beginGroup(spellDictionaryGroup);
+    const QStringList keys = settings.childKeys();
+    for (const QString &key : keys)
+        dict.insert(key, settings.value(key).toStringList());
+    settings.endGroup();
+    if (!dict.contains(m_spellCheckLanguage))
+        dict.insert(m_spellCheckLanguage, {});
+    return dict;
 }

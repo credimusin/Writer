@@ -7,6 +7,7 @@
         <file alias="UnsavedChangesDialog.qml">UnsavedChangesDialog.qml</file>
         <file alias="ExternalChangeDialog.qml">ExternalChangeDialog.qml</file>
         <file alias="MetadataDialog.qml">MetadataDialog.qml</file>
+        <file alias="SpellPopup.qml">SpellPopup.qml</file>
         <file alias="EditorMutations.js">EditorMutations.js</file>
     </qresource>
 </RCC>

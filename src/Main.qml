@@ -273,6 +273,18 @@ ApplicationWindow {
         onActivated: win.moveSearch(1)
     }
 
+    Shortcut {
+        sequence: "Ctrl+."
+        context: Qt.WindowShortcut
+        onActivated: editor.openSpellPopupAtCursor()
+    }
+
+    Shortcut {
+        sequence: "F7"
+        context: Qt.ApplicationShortcut
+        onActivated: spellSettings.enabled = !spellSettings.enabled
+    }
+
     Connections {
         target: backend
 
@@ -287,6 +299,17 @@ ApplicationWindow {
             externalChangeDialog.deleted = deleted;
             externalChangeDialog.locallyModified = locallyModified;
             externalChangeDialog.open();
+        }
+
+        function onSpellDiagnosticsChanged() {
+            Qt.callLater(spellUnderlineCanvas.requestPaint);
+            if (spellPopup.opened) {
+                var updated = backend.diagnosticAt(spellPopup.diagStart);
+                if (updated && updated.valid)
+                    spellPopup.loadDiagnostic(updated);
+                else
+                    spellPopup.close();
+            }
         }
     }
 
@@ -340,6 +363,31 @@ ApplicationWindow {
         }
     }
 
+    SpellPopup {
+        id: spellPopup
+        objectName: "spellPopup"
+        darkMode: win.darkMode
+        textScale: win.textScale
+        textColor: win.textColor
+        strongTextColor: win.strongTextColor
+        mutedColor: win.mutedColor
+        accentColor: backend.themeAccent
+        containerWidth: win.width
+        containerHeight: win.height
+
+        onSuggestionChosen: function(start, end, replacement) {
+            EditorMutations.replaceRange(editor, start, end, replacement);
+            editor.forceActiveFocus();
+        }
+
+        onAddToDictionaryRequested: function(word, language) {
+            backend.addToDictionary(word, language);
+            editor.forceActiveFocus();
+        }
+
+        onClosed: editor.forceActiveFocus()
+    }
+
     Dialog {
         id: shortcutsDialog
         modal: true
@@ -373,7 +421,7 @@ ApplicationWindow {
                 }
 
                 Label {
-                    text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+M          Properties\nCtrl+P          Export PDF\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nCtrl+H          Cycle Heading\nCtrl+Shift+H    Clear Heading\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
+                    text: "Ctrl+S          Save\nCtrl+Shift+S    Save As\nCtrl+O          Open\nCtrl+M          Properties\nCtrl+P          Export PDF\nCtrl+N          New Window\nCtrl+F          Find\nCtrl+B          Bold\nCtrl+I          Italic\nCtrl+K          Link\nCtrl+H          Cycle Heading\nCtrl+Shift+H    Clear Heading\nCtrl+.          Spell Suggestions\nF7              Toggle Spell Check\nF11 / Super+F   Fullscreen\nCtrl+?          Shortcuts"
                     lineHeight: 1.5
                     color: win.textColor
                     font.family: systemTheme.monospaceFamily
@@ -755,6 +803,144 @@ ApplicationWindow {
                     var contentChanged = backend.editorTextChanged();
                     if (win.searchOpen && contentChanged)
                         win.updateSearch(true);
+                    Qt.callLater(spellUnderlineCanvas.requestPaint);
+                }
+
+                onWidthChanged: Qt.callLater(spellUnderlineCanvas.requestPaint)
+
+                Canvas {
+                    id: spellUnderlineCanvas
+                    readonly property real dpr: Screen.devicePixelRatio
+                    readonly property real viewTop: Math.max(0, editorFlick.contentY - editor.y)
+                    readonly property real viewBottom: Math.min(editor.height, editorFlick.contentY + editorFlick.height - editor.y)
+                    readonly property real viewHeight: Math.max(1, Math.ceil(viewBottom - Math.floor(viewTop)))
+                    readonly property var spans: backend.spellUnderlineSpans
+
+                    x: 0
+                    y: Math.floor(viewTop)
+                    width: Math.max(1, editor.width) * dpr
+                    height: viewHeight * dpr
+                    transformOrigin: Item.TopLeft
+                    scale: 1 / dpr
+                    visible: backend.spellCheckEnabled && spans.length > 0 && viewBottom > viewTop
+                    z: 2
+
+                    onDprChanged: requestPaint()
+                    onYChanged: requestPaint()
+                    onHeightChanged: requestPaint()
+                    onSpansChanged: Qt.callLater(requestPaint)
+
+                    function drawWaveSegment(ctx, x1, x2, baseY, color) {
+                        if (x2 - x1 < 2)
+                            return;
+                        var step = Math.max(2.0, 2.5 * win.textScale);
+                        var amp = Math.max(1.0, 1.3 * win.textScale);
+                        ctx.strokeStyle = color;
+                        ctx.lineWidth = Math.max(1.1, 1.2 * win.textScale);
+                        ctx.beginPath();
+                        ctx.moveTo(x1, baseY);
+                        var up = true;
+                        for (var x = x1 + step; x < x2; x += step) {
+                            ctx.lineTo(x, baseY + (up ? -amp : amp));
+                            up = !up;
+                        }
+                        ctx.lineTo(x2, baseY + (up ? -amp * 0.5 : amp * 0.5));
+                        ctx.stroke();
+                    }
+
+                    onPaint: {
+                        var ctx = getContext("2d");
+                        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                        ctx.clearRect(0, 0, editor.width, viewHeight);
+                        if (!backend.spellCheckEnabled || spans.length === 0)
+                            return;
+
+                        var textLen = editor.text.length;
+                        if (textLen === 0)
+                            return;
+
+                        var spellColor = win.darkMode ? "#e05d5d" : "#d32f2f";
+                        var grammarColor = win.darkMode ? "#e0a84b" : "#c77c02";
+
+                        for (var i = 0; i < spans.length; i++) {
+                            var s = spans[i];
+                            var start = Math.max(0, Math.min(textLen - 1, s.start));
+                            var end = Math.max(start + 1, Math.min(textLen, s.end));
+                            if (start >= end)
+                                continue;
+
+                            var rStart = editor.positionToRectangle(start);
+                            var rEnd = editor.positionToRectangle(end);
+                            var rLast = editor.positionToRectangle(end - 1);
+                            if (rLast.y + rLast.height < y || rStart.y > y + viewHeight)
+                                continue;
+
+                            var color = s.isSpelling ? spellColor : grammarColor;
+                            if (Math.abs(rStart.y - rEnd.y) < 1 && rEnd.x > rStart.x) {
+                                var baseY = rStart.y + rStart.height - 2 * win.textScale - y;
+                                drawWaveSegment(ctx, rStart.x, rEnd.x, baseY, color);
+                            } else {
+                                var segStartX = rStart.x;
+                                var segEndX = rStart.x;
+                                var segY = rStart.y;
+                                var segH = rStart.height;
+                                for (var pos = start; pos < end; pos++) {
+                                    var rp = editor.positionToRectangle(pos);
+                                    var rpNext = editor.positionToRectangle(pos + 1);
+                                    var charRight = (Math.abs(rpNext.y - rp.y) < 1 && rpNext.x > rp.x)
+                                        ? rpNext.x
+                                        : rp.x + writerFontMetrics.advanceWidth(editor.text.charAt(pos));
+                                    if (Math.abs(rp.y - segY) < 1) {
+                                        segEndX = Math.max(segEndX, charRight);
+                                    } else {
+                                        drawWaveSegment(ctx, segStartX, segEndX, segY + segH - 2 * win.textScale - y, color);
+                                        segStartX = rp.x;
+                                        segEndX = charRight;
+                                        segY = rp.y;
+                                        segH = rp.height;
+                                    }
+                                }
+                                drawWaveSegment(ctx, segStartX, segEndX, segY + segH - 2 * win.textScale - y, color);
+                            }
+                        }
+                    }
+
+                    Connections {
+                        target: win
+                        function onDarkModeChanged() { spellUnderlineCanvas.requestPaint(); }
+                        function onEditorFontPixelSizeChanged() { Qt.callLater(spellUnderlineCanvas.requestPaint); }
+                    }
+                }
+
+                function openSpellPopupAt(pos, rect, preloadedDiag) {
+                    var diag = preloadedDiag || backend.diagnosticAt(pos);
+                    if (!diag || !diag.valid)
+                        return false;
+                    var mapped = editor.mapToItem(win.contentItem, rect.x, rect.y);
+                    spellPopup.openForDiagnostic(mapped.x, mapped.y, rect.height, diag);
+                    return true;
+                }
+
+                function openSpellPopupAtCursor() {
+                    return openSpellPopupAt(cursorPosition, cursorRectangle, null);
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.RightButton
+                    cursorShape: Qt.IBeamCursor
+                    onPressed: function(mouse) {
+                        var pos = editor.positionAt(mouse.x, mouse.y);
+                        var diag = backend.diagnosticAt(pos);
+                        if (diag && diag.valid) {
+                            editor.forceActiveFocus();
+                            editor.cursorPosition = pos;
+                            editor.openSpellPopupAt(pos, editor.positionToRectangle(pos), diag);
+                            mouse.accepted = true;
+                        } else {
+                            mouse.accepted = false;
+                        }
+                    }
                 }
 
                 Text {
@@ -826,16 +1012,58 @@ ApplicationWindow {
             visible: text !== ""
         }
 
-        Label {
+        Row {
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.rightMargin: 12
             anchors.bottomMargin: 10
-            text: backend.wordCount + (backend.wordCount === 1 ? " Word" : " Words")
-            color: win.mutedColor
-            opacity: 0.75
-            font.family: systemTheme.monospaceFamily
-            font.pixelSize: win.scaledSize(11)
+            spacing: 12
+
+            Label {
+                visible: backend.spellCheckAvailable && backend.spellCheckEnabled
+                text: backend.spellCheckLanguage.split("-")[0].toUpperCase()
+                color: win.mutedColor
+                opacity: langHover.containsMouse ? 1.0 : 0.75
+                font.family: systemTheme.monospaceFamily
+                font.pixelSize: win.scaledSize(11)
+
+                MouseArea {
+                    id: langHover
+                    anchors.fill: parent
+                    anchors.margins: -4
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        spellSettings.language = spellSettings.language === "ru-RU" ? "en-US" : "ru-RU";
+                    }
+                }
+            }
+
+            Label {
+                visible: backend.spellCheckAvailable
+                text: backend.spellCheckEnabled ? "Spell" : "Spell Off"
+                color: win.mutedColor
+                opacity: spellToggleHover.containsMouse ? 1.0 : (backend.spellCheckEnabled ? 0.75 : 0.45)
+                font.family: systemTheme.monospaceFamily
+                font.pixelSize: win.scaledSize(11)
+
+                MouseArea {
+                    id: spellToggleHover
+                    anchors.fill: parent
+                    anchors.margins: -4
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: spellSettings.enabled = !spellSettings.enabled
+                }
+            }
+
+            Label {
+                text: backend.wordCount + (backend.wordCount === 1 ? " Word" : " Words")
+                color: win.mutedColor
+                opacity: 0.75
+                font.family: systemTheme.monospaceFamily
+                font.pixelSize: win.scaledSize(11)
+            }
         }
 
 
@@ -921,6 +1149,16 @@ ApplicationWindow {
         property int themeMode: 0 // 0 = system, 1 = light, 2 = dark
     }
 
+    Settings {
+        id: spellSettings
+        category: "spellcheck"
+        property bool enabled: true
+        property string language: "ru-RU"
+
+        onEnabledChanged: backend.spellCheckEnabled = enabled
+        onLanguageChanged: backend.spellCheckLanguage = language
+    }
+
     property bool effectiveDarkMode: {
         if (appearanceSettings.themeMode === 1) return false;
         if (appearanceSettings.themeMode === 2) return true;
@@ -933,6 +1171,8 @@ ApplicationWindow {
 
     Component.onCompleted: {
         backend.darkMode = effectiveDarkMode;
+        backend.spellCheckEnabled = spellSettings.enabled;
+        backend.spellCheckLanguage = spellSettings.language;
         if (windowSettings.maximized) showMaximized();
     }
 

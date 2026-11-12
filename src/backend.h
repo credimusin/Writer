@@ -9,9 +9,12 @@
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
+#include <QVariantMap>
 #include <memory>
 
-class MarkdownHighlighter;
+#include "lspclient.h"
+#include "markdownhighlighter.h"
+
 class QTextDocument;
 class QLockFile;
 
@@ -26,6 +29,10 @@ class Backend : public QObject {
     Q_PROPERTY(QString themeBackground READ themeBackground NOTIFY themeColorsChanged)
     Q_PROPERTY(QString themeForeground READ themeForeground NOTIFY themeColorsChanged)
     Q_PROPERTY(QString themeAccent READ themeAccent CONSTANT)
+    Q_PROPERTY(bool spellCheckEnabled READ spellCheckEnabled WRITE setSpellCheckEnabled NOTIFY spellCheckEnabledChanged)
+    Q_PROPERTY(bool spellCheckAvailable READ spellCheckAvailable NOTIFY spellCheckAvailableChanged)
+    Q_PROPERTY(QString spellCheckLanguage READ spellCheckLanguage WRITE setSpellCheckLanguage NOTIFY spellCheckLanguageChanged)
+    Q_PROPERTY(QVariantList spellUnderlineSpans READ spellUnderlineSpans NOTIFY spellDiagnosticsChanged)
 
 public:
     explicit Backend(QObject *parent = nullptr);
@@ -43,6 +50,13 @@ public:
     QString themeBackground() const { return m_themeBackground; }
     QString themeForeground() const { return m_themeForeground; }
     QString themeAccent() const { return m_themeAccent; }
+    bool spellCheckEnabled() const { return m_spellCheckEnabled; }
+    void setSpellCheckEnabled(bool enabled);
+    bool spellCheckAvailable() const;
+    QString spellCheckLanguage() const { return m_spellCheckLanguage; }
+    void setSpellCheckLanguage(const QString &language);
+    QVariantList spellUnderlineSpans() const;
+    void setSpellDiagnostics(const QList<LspClient::SpellDiagnostic> &diagnostics);
     static int countWords(const QString &text);
     static QString normalizedLinkUrl(const QString &clipboardText);
     static QString suggestedFileName(const QString &text);
@@ -70,6 +84,8 @@ public:
     Q_INVOKABLE void setSearchHighlight(const QString &query, int currentMatchStart);
     Q_INVOKABLE QVariantMap documentMetadata() const;
     Q_INVOKABLE void updateDocumentMetadata(const QString &title, const QString &author, const QString &topic);
+    Q_INVOKABLE QVariantMap diagnosticAt(int cursorPosition) const;
+    Q_INVOKABLE void addToDictionary(const QString &word, const QString &language = QString());
 
 signals:
     void saveFinished(bool saved);
@@ -81,6 +97,10 @@ signals:
     void textScaleChanged();
     void themeColorsChanged();
     void externalChangeDetected(bool deleted, bool locallyModified);
+    void spellCheckEnabledChanged();
+    void spellCheckAvailableChanged();
+    void spellCheckLanguageChanged();
+    void spellDiagnosticsChanged();
 
 private:
     void loadDocumentText(const QString &text);
@@ -104,6 +124,29 @@ private:
     void updateModifiedState();
     QString serializeFileContent(const QString &bodyText) const;
     void initNewDocumentMetadata();
+    void ensureLspClientStarted();
+    void syncLspOpenDocument();
+    void scheduleSpellCheck();
+    void sendSpellCheckChange();
+    void clearSpellDiagnostics();
+    void handleDocumentContentsChange(int position, int charsRemoved, int charsAdded);
+    QString currentDocumentUri() const;
+    QMap<QString, QStringList> loadCustomDictionary() const;
+
+    struct MappedDiagnostic {
+        int start = 0;
+        int end = 0;
+        int startLine = 0;
+        int endLine = 0;
+        bool isSpelling = true;
+        QString code;
+        QString message;
+        QString language;
+        QString word;
+        QStringList suggestions;
+    };
+
+    QHash<int, QList<MarkdownHighlighter::DiagnosticSpan>> buildHighlightMap() const;
 
     struct Metadata {
         bool hasMetadata = false;
@@ -141,4 +184,11 @@ private:
     QString m_themeBackground = QStringLiteral("#fa101010");
     QString m_themeForeground = QStringLiteral("#f5f1e8");
     const QString m_themeAccent = QStringLiteral("#4a90e2");
+
+    bool m_spellCheckEnabled = true;
+    QString m_spellCheckLanguage = QStringLiteral("ru-RU");
+    int m_lastBlockCount = 1;
+    QTimer m_spellDebounceTimer;
+    LspClient *m_lspClient = nullptr;
+    QList<MappedDiagnostic> m_diagnostics;
 };
